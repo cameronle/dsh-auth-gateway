@@ -57,6 +57,14 @@ The Caddy site deliberately uses `http://:18080` together with
 delivered by Cloudflare Tunnel, while `bind` keeps the actual listener on
 loopback.
 
+After `forward_auth` succeeds, the DSH upstream receives the internal
+`Host: 127.0.0.1:3080` and matching Origin. DSH deliberately keeps
+`settings.*`, `credentials.*`, native host actions, and model discovery behind
+its loopback-authority fence even when a public hostname is trusted. The
+external gateway is the authentication boundary, while DSH remains physically
+bound to loopback; without this normalization, the Settings UI returns HTTP
+403 after an otherwise successful gateway login.
+
 ## Security notes
 
 - The application listener must remain loopback-only; non-loopback `LISTEN` values are rejected.

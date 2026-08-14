@@ -19,6 +19,12 @@ http://:18080 {
 			uri /verify
 		}
 		header Cache-Control "no-store"
-		reverse_proxy 127.0.0.1:3080
+		reverse_proxy 127.0.0.1:3080 {
+			# DSH pins settings.*, credentials.*, native host actions, and
+			# model discovery to a loopback authority. Requests reaching here
+			# have passed gateway authentication, and DSH itself is loopback-only.
+			header_up Host 127.0.0.1:3080
+			header_up Origin http://127.0.0.1:3080
+		}
 	}
 }
