@@ -1,0 +1,22 @@
+[Unit]
+Description=DeepSeek Harness Web UI (loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/home/hermes/workspace
+Environment=DSH_HOME=/home/hermes/.dsh-gateway
+Environment=PATH=/home/hermes/.hermes/node/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/hermes/.hermes/node/bin/dsh --profile web --host 127.0.0.1 --port 3080 --trusted-host dsh.example.com
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

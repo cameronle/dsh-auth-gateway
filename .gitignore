@@ -1,4 +1,4 @@
-dsh-auth-gateway
+/dsh-auth-gateway
 *.env
 !configs/config.example.env
 *.hash
