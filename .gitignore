@@ -1,0 +1,6 @@
+dsh-auth-gateway
+*.env
+!configs/config.example.env
+*.hash
+*.log
+.DS_Store
