@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import http.client
 import json
+import os
 import ssl
 
-HOST = "dsh.example.com"
+HOST = os.environ.get("DSH_AUDIT_HOST", "dsh.example.com")
 PATHS = [
     "/",
     "/index.html",
@@ -38,6 +39,7 @@ HEADERS = [
     {"Host": "127.0.0.1:3080"},
 ]
 
+
 def request(method, path, headers=None, body=None):
     ctx = ssl.create_default_context()
     c = http.client.HTTPSConnection(HOST, 443, context=ctx, timeout=15)
@@ -49,6 +51,7 @@ def request(method, path, headers=None, body=None):
     c.close()
     return out
 
+
 failures = []
 for path in PATHS:
     for idx, headers in enumerate(HEADERS):
@@ -57,16 +60,19 @@ for path in PATHS:
         if path.startswith("/api/") and "events." not in path:
             method = "POST"
             rpc = path.rsplit("/", 1)[-1].rstrip("/")
-            body = json.dumps({"type":"client-request","rpcId":"audit","method":rpc,"payload":{}})
-            headers = {"Content-Type":"application/json", **headers}
+            body = json.dumps({"type": "client-request", "rpcId": "audit", "method": rpc, "payload": {}})
+            headers = {"Content-Type": "application/json", **headers}
         elif path == "/__dsh_auth/session":
-            method = "POST"; body = '{"key":"wrong"}'; headers = {"Content-Type":"application/json", **headers}
+            method = "POST"
+            body = '{"key":"wrong"}'
+            headers = {"Content-Type": "application/json", **headers}
         elif path == "/__dsh_auth/logout":
             method = "POST"
         try:
             status, ctype, size, preview = request(method, path, headers, body)
         except Exception as e:
-            print("ERROR", method, path, idx, type(e).__name__, str(e)); continue
+            print("ERROR", method, path, idx, type(e).__name__, str(e))
+            continue
         if path in ("/__dsh_auth/login", "/healthz"):
             allowed = status == 200 if idx not in (4, 6) else status == 403
         elif path == "/__dsh_auth/logout":
@@ -74,7 +80,7 @@ for path in PATHS:
         else:
             allowed = status in (400, 401, 403, 404, 405, 429)
         if not allowed:
-            failures.append((method,path,idx,status,ctype,preview[:80]))
+            failures.append((method, path, idx, status, ctype, preview[:80]))
         print(f"{method:4} {status:3} h{idx} {path}")
 print("FAILURES", json.dumps(failures, ensure_ascii=False))
 raise SystemExit(1 if failures else 0)

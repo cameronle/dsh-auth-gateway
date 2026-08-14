@@ -1,11 +1,14 @@
-const WebSocket = require('/home/hermes/.hermes/node/lib/node_modules/@deepseek-ai/dsh/node_modules/ws')
+const WebSocket = require(process.env.DSH_WS_MODULE || 'ws')
+
+const host = process.env.DSH_AUDIT_HOST || 'dsh.example.com'
+const base = `wss://${host}`
 const targets = [
-  'wss://dsh.example.com/api/events.mux',
-  'wss://dsh.example.com/api/events.host',
-  'wss://dsh.example.com//api/events.mux',
-  'wss://dsh.example.com/%2e/api/events.mux',
-  'wss://dsh.example.com/api%2fevents.mux',
-  'wss://dsh.example.com/API/events.mux',
+  `${base}/api/events.mux`,
+  `${base}/api/events.host`,
+  `${base}//api/events.mux`,
+  `${base}/%2e/api/events.mux`,
+  `${base}/api%2fevents.mux`,
+  `${base}/API/events.mux`,
 ]
 const headersList = [
   {},
@@ -14,11 +17,35 @@ const headersList = [
   { 'X-Forwarded-For': '127.0.0.1', 'CF-Connecting-IP': '127.0.0.1' },
   { Host: '127.0.0.1:3080' },
 ]
-let failures = []
+const failures = []
+
 Promise.all(targets.flatMap(url => headersList.map((headers, idx) => new Promise(resolve => {
-  const ws = new WebSocket(url, { headers: { Origin: 'https://dsh.example.com', ...headers } })
-  const timer = setTimeout(() => { failures.push([url, idx, 'timeout']); try { ws.terminate() } catch {} ; resolve() }, 10000)
-  ws.once('open', () => { clearTimeout(timer); failures.push([url, idx, 'OPENED']); ws.close(); resolve() })
-  ws.once('unexpected-response', (_req, res) => { clearTimeout(timer); console.log(res.statusCode, idx, url); if (![400,401,403,404,405,429].includes(res.statusCode)) failures.push([url,idx,'HTTP '+res.statusCode]); resolve() })
-  ws.once('error', err => { clearTimeout(timer); console.log('error',idx,url,err.message); resolve() })
-})))).then(() => { console.log('FAILURES', JSON.stringify(failures)); process.exit(failures.length ? 1 : 0) })
+  const ws = new WebSocket(url, { headers: { Origin: `https://${host}`, ...headers } })
+  const timer = setTimeout(() => {
+    failures.push([url, idx, 'timeout'])
+    try { ws.terminate() } catch {}
+    resolve()
+  }, 10000)
+  ws.once('open', () => {
+    clearTimeout(timer)
+    failures.push([url, idx, 'OPENED'])
+    ws.close()
+    resolve()
+  })
+  ws.once('unexpected-response', (_req, res) => {
+    clearTimeout(timer)
+    console.log(res.statusCode, idx, url)
+    if (![400, 401, 403, 404, 405, 429].includes(res.statusCode)) {
+      failures.push([url, idx, `HTTP ${res.statusCode}`])
+    }
+    resolve()
+  })
+  ws.once('error', err => {
+    clearTimeout(timer)
+    console.log('error', idx, url, err.message)
+    resolve()
+  })
+})))).then(() => {
+  console.log('FAILURES', JSON.stringify(failures))
+  process.exit(failures.length ? 1 : 0)
+})

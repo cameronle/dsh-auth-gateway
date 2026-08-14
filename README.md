@@ -30,6 +30,16 @@ go vet ./...
 CGO_ENABLED=0 go build -o dsh-auth-gateway ./cmd/dsh-auth-gateway
 ```
 
+Run the optional deployment audit scripts against your own hostname:
+
+```sh
+DSH_AUDIT_HOST=dsh.example.com python3 scripts/unauth_http_audit.py
+DSH_AUDIT_HOST=dsh.example.com node scripts/unauth_ws_audit.js
+```
+
+The WebSocket audit uses the standard `ws` package. If it is installed at a
+non-standard path, set `DSH_WS_MODULE=/absolute/path/to/ws`.
+
 ## Generate a management key
 
 ```sh
@@ -69,7 +79,7 @@ bound to loopback; without this normalization, the Settings UI returns HTTP
 ## Security notes
 
 - The application listener must remain loopback-only; non-loopback `LISTEN` values are rejected.
-- The gateway trusts `CF-Connecting-IP` only when the immediate peer matches `TRUSTED_PROXY_IP`.
+- Rate limiting uses the immediate peer address and does not trust caller-controlled forwarding headers.
 - Authorization and Cookie values are never included in audit records.
 - Cloudflare challenges must not be applied to `/api/*` or WebSocket paths.
 - This boundary does not protect against an attacker who already controls the host.
