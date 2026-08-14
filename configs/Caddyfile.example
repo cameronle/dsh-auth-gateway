@@ -1,11 +1,16 @@
-http://127.0.0.1:18080 {
+http://:18080 {
+	# A site address containing 127.0.0.1 would only match Host: 127.0.0.1.
+	# Match every Host delivered by the Tunnel, but bind the socket to loopback.
+	bind 127.0.0.1
+
 	log {
 		output stdout
-		format console
+		format json
 	}
 
 	@auth path /__dsh_auth/* /healthz
 	handle @auth {
+		header Cache-Control "no-store"
 		reverse_proxy 127.0.0.1:18081
 	}
 

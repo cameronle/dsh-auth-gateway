@@ -17,6 +17,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
+ReadWritePaths=/home/hermes/.dsh-gateway
 
 [Install]
 WantedBy=multi-user.target

@@ -4,3 +4,4 @@
 *.hash
 *.log
 .DS_Store
+/scripts/ws-*.js
