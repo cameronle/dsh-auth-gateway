@@ -87,6 +87,43 @@ func TestLoginIssuesHttpOnlyCookieAndVerifyAcceptsIt(t *testing.T) {
 	}
 }
 
+func TestRejectsUnexpectedPublicHost(t *testing.T) {
+	cfg := testConfig()
+	cfg.ExpectedHost = "dsh.example.test"
+	g, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/__dsh_auth/login", "/__dsh_auth/session", "/verify", "/healthz"} {
+		req := httptest.NewRequest(http.MethodGet, "http://auth"+path, nil)
+		req.Host = "evil.example"
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		g.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s got %d", path, rec.Code)
+		}
+	}
+}
+
+func TestAcceptsExpectedPublicHostWithDefaultHTTPSPort(t *testing.T) {
+	cfg := testConfig()
+	cfg.ExpectedHost = "dsh.example.test"
+	g, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://auth/__dsh_auth/login", nil)
+	req.Host = "dsh.example.test:443"
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d", rec.Code)
+	}
+}
+
 func TestLoginRejectsCrossOrigin(t *testing.T) {
 	g, err := New(testConfig())
 	if err != nil {
@@ -128,24 +165,17 @@ func TestLockoutAfterFailures(t *testing.T) {
 	}
 }
 
-func TestClientIPOnlyTrustsForwardedHeaderFromConfiguredProxy(t *testing.T) {
+func TestClientIPDoesNotTrustCallerControlledForwardedHeaders(t *testing.T) {
 	g, err := New(testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	trusted := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
-	trusted.RemoteAddr = "127.0.0.1:9999"
-	trusted.Header.Set("CF-Connecting-IP", "203.0.113.8")
-	if got := g.clientIP(trusted); got != "203.0.113.8" {
-		t.Fatalf("trusted got %s", got)
-	}
-
-	untrusted := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
-	untrusted.RemoteAddr = "192.0.2.4:9999"
-	untrusted.Header.Set("CF-Connecting-IP", "203.0.113.8")
-	if got := g.clientIP(untrusted); got != "192.0.2.4" {
-		t.Fatalf("untrusted got %s", got)
+	req := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	req.RemoteAddr = "127.0.0.1:9999"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.8")
+	if got := g.clientIP(req); got != "127.0.0.1" {
+		t.Fatalf("got %s", got)
 	}
 }
 

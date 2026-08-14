@@ -52,10 +52,17 @@ Validate the Caddy configuration before reload:
 caddy validate --config configs/Caddyfile.example --adapter caddyfile
 ```
 
-The Caddy site deliberately uses `http://:18080` together with
-`bind 127.0.0.1`: the wildcard site label accepts the public Host header
-delivered by Cloudflare Tunnel, while `bind` keeps the actual listener on
-loopback.
+Set the Caddy site label and `EXPECTED_HOST` to the one public hostname. The
+site still uses `bind 127.0.0.1`, so the socket remains loopback-only, and
+`admin off` disables Caddy's local runtime configuration API. The anonymous
+allowlist contains exact auth endpoint paths rather than a broad prefix.
+
+For host deployments, place Caddy, the auth gateway, and DSH in the shared
+private network namespace defined by `deploy/dsh-control-plane-netns.service`.
+Cloudflared stays in the host namespace and connects only through
+`unix:/run/dsh-control-plane/caddy.sock`. This removes ports 80/18081/3080 from
+the host network namespace, so an unrelated local process cannot bypass Caddy
+by dialing the DSH loopback port directly.
 
 After `forward_auth` succeeds, the DSH upstream receives the internal
 `Host: 127.0.0.1:3080` and matching Origin. DSH deliberately keeps

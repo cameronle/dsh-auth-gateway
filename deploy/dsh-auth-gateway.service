@@ -2,9 +2,13 @@
 Description=DSH authentication gateway
 After=network-online.target
 Wants=network-online.target
+Requires=dsh-control-plane-netns.service
+After=dsh-control-plane-netns.service
+JoinsNamespaceOf=dsh-control-plane-netns.service
 
 [Service]
 Type=simple
+PrivateNetwork=true
 User=dsh-auth
 Group=dsh-auth
 ExecStart=/usr/local/bin/dsh-auth-gateway -config /etc/dsh-auth-gateway/config.env

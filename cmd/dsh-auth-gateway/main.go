@@ -31,7 +31,7 @@ func main() {
 		KeySalt: cfg.KeySalt, KeyHash: cfg.KeyHash, SessionTTL: cfg.SessionTTL,
 		CookieName: cfg.CookieName, SecureCookie: cfg.SecureCookie,
 		MaxFailures: cfg.MaxFailures, FailureWindow: cfg.FailureWindow,
-		Lockout: cfg.Lockout, TrustedProxyIP: cfg.TrustedProxyIP, AuditWriter: os.Stdout,
+		Lockout: cfg.Lockout, TrustedProxyIP: cfg.TrustedProxyIP, ExpectedHost: cfg.ExpectedHost, AuditWriter: os.Stdout,
 	})
 	if err != nil {
 		log.Fatal(err)

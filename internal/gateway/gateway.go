@@ -29,6 +29,7 @@ type Config struct {
 	FailureWindow  time.Duration
 	Lockout        time.Duration
 	TrustedProxyIP string
+	ExpectedHost   string
 	AuditWriter    io.Writer
 }
 
@@ -111,7 +112,23 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/__dsh_auth/session", g.login)
 	mux.HandleFunc("/__dsh_auth/logout", g.logout)
 	mux.HandleFunc("/verify", g.verify)
-	return g.securityHeaders(mux)
+	return g.securityHeaders(g.requireExpectedHost(mux))
+}
+
+func (g *Gateway) requireExpectedHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if g.cfg.ExpectedHost != "" {
+			host := strings.ToLower(r.Host)
+			if parsedHost, port, err := net.SplitHostPort(host); err == nil && port == "443" {
+				host = parsedHost
+			}
+			if host != strings.ToLower(g.cfg.ExpectedHost) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (g *Gateway) health(w http.ResponseWriter, _ *http.Request) {
@@ -279,11 +296,6 @@ func (g *Gateway) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
-	}
-	if host == g.cfg.TrustedProxyIP {
-		if cf := net.ParseIP(strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))); cf != nil {
-			return cf.String()
-		}
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.String()

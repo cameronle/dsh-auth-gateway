@@ -1,0 +1,15 @@
+[Unit]
+Description=DSH private control-plane network namespace anchor
+Before=caddy.service dsh-auth-gateway.service dsh-web.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sleep infinity
+PrivateNetwork=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

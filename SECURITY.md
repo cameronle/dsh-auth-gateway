@@ -6,4 +6,6 @@ Report vulnerabilities privately to the repository owner. Do not open public iss
 
 The gateway protects a loopback-only web service from unauthenticated network access through a trusted local reverse proxy. It does not defend against an attacker who already controls the host, can modify Caddy/systemd configuration, or can read process memory as root.
 
+The recommended systemd deployment additionally isolates Caddy, the auth gateway, and DSH in a shared private network namespace. Cloudflared reaches Caddy through a root-managed Unix socket. Root remains outside the threat model, but ordinary host processes no longer have a TCP path to DSH.
+
 Never store the management key, production hash file, session data, Cloudflare token, or request Authorization/Cookie headers in this repository or CI logs.

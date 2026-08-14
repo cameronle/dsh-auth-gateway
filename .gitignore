@@ -6,3 +6,4 @@
 .DS_Store
 /scripts/ws-*.js
 /configs/Caddyfile.production
+/configs/Caddyfile.production.*

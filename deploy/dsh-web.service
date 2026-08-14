@@ -2,9 +2,13 @@
 Description=DeepSeek Harness Web UI (loopback only)
 After=network-online.target
 Wants=network-online.target
+Requires=dsh-control-plane-netns.service
+After=dsh-control-plane-netns.service
+JoinsNamespaceOf=dsh-control-plane-netns.service
 
 [Service]
 Type=simple
+PrivateNetwork=true
 User=hermes
 Group=hermes
 WorkingDirectory=/home/hermes/workspace
@@ -18,6 +22,18 @@ PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
 ReadWritePaths=/home/hermes/.dsh-gateway
+UMask=0077
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictNamespaces=true
 
 [Install]
 WantedBy=multi-user.target

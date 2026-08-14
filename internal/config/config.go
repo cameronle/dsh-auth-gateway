@@ -21,6 +21,7 @@ type Config struct {
 	FailureWindow  time.Duration
 	Lockout        time.Duration
 	TrustedProxyIP string
+	ExpectedHost   string
 }
 
 func Load(path string) (Config, error) {
@@ -55,7 +56,7 @@ func Load(path string) (Config, error) {
 	if err := s.Err(); err != nil {
 		return Config{}, err
 	}
-	cfg := Config{Listen: m["LISTEN"], KeySalt: m["KEY_SALT"], KeyHash: m["KEY_HASH"], CookieName: m["COOKIE_NAME"], TrustedProxyIP: m["TRUSTED_PROXY_IP"]}
+	cfg := Config{Listen: m["LISTEN"], KeySalt: m["KEY_SALT"], KeyHash: m["KEY_HASH"], CookieName: m["COOKIE_NAME"], TrustedProxyIP: m["TRUSTED_PROXY_IP"], ExpectedHost: strings.ToLower(m["EXPECTED_HOST"])}
 	if cfg.Listen == "" {
 		cfg.Listen = "127.0.0.1:18081"
 	}
@@ -65,6 +66,9 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.KeySalt == "" || cfg.KeyHash == "" {
 		return Config{}, errors.New("KEY_SALT and KEY_HASH are required")
+	}
+	if cfg.ExpectedHost == "" || strings.ContainsAny(cfg.ExpectedHost, "/\\") || strings.Contains(cfg.ExpectedHost, "://") {
+		return Config{}, errors.New("EXPECTED_HOST must be a hostname without scheme or path")
 	}
 	if cfg.CookieName == "" {
 		cfg.CookieName = "dsh_gateway_session"
