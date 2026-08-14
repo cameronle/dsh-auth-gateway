@@ -17,6 +17,18 @@ func TestLoadRejectsWorldReadableConfig(t *testing.T) {
 	}
 }
 
+func TestLoadAllowsGroupReadableConfig(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "config.env")
+	body := "LISTEN=127.0.0.1:18081\nKEY_SALT=c2FsdHNhbHRzYWx0c2FsdA\nKEY_HASH=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+	if err := os.WriteFile(p, []byte(body), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err != nil {
+		t.Fatalf("group-readable service config should be allowed: %v", err)
+	}
+}
+
 func TestLoadParsesDurationsAndRequiredValues(t *testing.T) {
 	d := t.TempDir()
 	p := filepath.Join(d, "config.env")

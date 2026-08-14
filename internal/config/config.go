@@ -28,8 +28,11 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if info.Mode().Perm()&0077 != 0 {
-		return Config{}, errors.New("config must not be group/world accessible")
+	// The service commonly runs as an unprivileged user reading a root-owned,
+	// group-readable file. Refuse all permissions for "other" and any write or
+	// execute permission for the group; 0600 and 0640 are accepted.
+	if info.Mode().Perm()&0007 != 0 || info.Mode().Perm()&0030 != 0 {
+		return Config{}, errors.New("config permissions must be 0600 or 0640")
 	}
 	f, err := os.Open(path)
 	if err != nil {
