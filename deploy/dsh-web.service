@@ -2,13 +2,9 @@
 Description=DeepSeek Harness Web UI (loopback only)
 After=network-online.target
 Wants=network-online.target
-Requires=dsh-control-plane-netns.service
-After=dsh-control-plane-netns.service
-JoinsNamespaceOf=dsh-control-plane-netns.service
 
 [Service]
 Type=simple
-PrivateNetwork=true
 User=hermes
 Group=hermes
 WorkingDirectory=/home/hermes/workspace

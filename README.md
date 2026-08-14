@@ -57,12 +57,6 @@ site still uses `bind 127.0.0.1`, so the socket remains loopback-only, and
 `admin off` disables Caddy's local runtime configuration API. The anonymous
 allowlist contains exact auth endpoint paths rather than a broad prefix.
 
-For host deployments, place Caddy, the auth gateway, and DSH in the shared
-private network namespace defined by `deploy/dsh-control-plane-netns.service`.
-Cloudflared stays in the host namespace and connects only through
-`unix:/run/dsh-control-plane/caddy.sock`. This removes ports 80/18081/3080 from
-the host network namespace, so an unrelated local process cannot bypass Caddy
-by dialing the DSH loopback port directly.
 
 After `forward_auth` succeeds, the DSH upstream receives the internal
 `Host: 127.0.0.1:3080` and matching Origin. DSH deliberately keeps

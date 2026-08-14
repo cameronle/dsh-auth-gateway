@@ -3,12 +3,9 @@
 	admin off
 }
 
-http://dsh.example.com {
-	# A site address containing 127.0.0.1 would only match Host: 127.0.0.1.
-	# Match every Host delivered by the Tunnel, but bind the socket to loopback.
+http://dsh.example.com:18080 {
+	# Match exactly the public Host and keep the listener on host loopback.
 	bind 127.0.0.1
-	# cloudflared remains in the host namespace and reaches this Unix socket.
-	bind unix//run/dsh-control-plane/caddy.sock
 
 	log {
 		output stdout
