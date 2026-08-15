@@ -16,9 +16,7 @@ type Config struct {
 	KeyHash               string
 	SessionTTL            time.Duration
 	CookieName            string
-	SecureCookie          bool
 	PublicScheme          string
-	HostPolicy            string
 	ExpectedHost          string
 	TrustedProxyIP        string
 	ClientIPHeader        string
@@ -39,8 +37,8 @@ type Config struct {
 const maxDuration = 10 * 365 * 24 * time.Hour
 
 var allowedKeys = map[string]struct{}{
-	"LISTEN": {}, "KEY_SALT": {}, "KEY_HASH": {}, "SESSION_TTL": {}, "COOKIE_NAME": {}, "SECURE_COOKIE": {},
-	"PUBLIC_SCHEME": {}, "HOST_POLICY": {}, "EXPECTED_HOST": {},
+	"LISTEN": {}, "KEY_SALT": {}, "KEY_HASH": {}, "SESSION_TTL": {}, "COOKIE_NAME": {},
+	"PUBLIC_SCHEME": {}, "EXPECTED_HOST": {},
 	"TRUSTED_PROXY_IP": {}, "CLIENT_IP_HEADER": {}, "REQUIRE_CLIENT_IDENTITY": {}, "AUTH_FAILURE_BURST": {}, "AUTH_FAILURE_REFILL": {},
 	"AUTH_GLOBAL_BURST": {}, "AUTH_GLOBAL_REFILL": {}, "AUTH_STATE_TTL": {}, "AUTH_STATE_MAX_CLIENTS": {}, "AUTH_CLEANUP_INTERVAL": {},
 	"AUTH_SESSION_MAX": {}, "KEY_CHECK_CONCURRENCY": {}, "KEY_CHECK_BURST": {}, "KEY_CHECK_REFILL": {},
@@ -86,7 +84,7 @@ func Load(path string) (Config, error) {
 	if err := s.Err(); err != nil {
 		return Config{}, err
 	}
-	c := Config{Listen: m["LISTEN"], KeySalt: m["KEY_SALT"], KeyHash: m["KEY_HASH"], CookieName: m["COOKIE_NAME"], PublicScheme: strings.ToLower(m["PUBLIC_SCHEME"]), HostPolicy: strings.ToLower(m["HOST_POLICY"]), ExpectedHost: strings.ToLower(m["EXPECTED_HOST"]), TrustedProxyIP: m["TRUSTED_PROXY_IP"], ClientIPHeader: m["CLIENT_IP_HEADER"]}
+	c := Config{Listen: m["LISTEN"], KeySalt: m["KEY_SALT"], KeyHash: m["KEY_HASH"], CookieName: m["COOKIE_NAME"], PublicScheme: strings.ToLower(m["PUBLIC_SCHEME"]), ExpectedHost: strings.ToLower(m["EXPECTED_HOST"]), TrustedProxyIP: m["TRUSTED_PROXY_IP"], ClientIPHeader: m["CLIENT_IP_HEADER"]}
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:18081"
 	}
@@ -106,22 +104,8 @@ func Load(path string) (Config, error) {
 	if c.PublicScheme != "http" && c.PublicScheme != "https" {
 		return Config{}, errors.New("PUBLIC_SCHEME must be http or https")
 	}
-	if c.HostPolicy == "" {
-		if c.ExpectedHost != "" {
-			c.HostPolicy = "fixed"
-		} else {
-			c.HostPolicy = "request"
-		}
-	}
-	if c.HostPolicy != "request" && c.HostPolicy != "fixed" {
-		return Config{}, errors.New("HOST_POLICY must be request or fixed")
-	}
-	if c.HostPolicy == "fixed" {
-		if !validHostname(c.ExpectedHost) {
-			return Config{}, errors.New("fixed HOST_POLICY requires a valid EXPECTED_HOST")
-		}
-	} else if c.ExpectedHost != "" {
-		return Config{}, errors.New("EXPECTED_HOST is only valid with fixed HOST_POLICY")
+	if c.ExpectedHost != "" && !validHostname(c.ExpectedHost) {
+		return Config{}, errors.New("EXPECTED_HOST must be a valid hostname")
 	}
 	if c.CookieName == "" {
 		c.CookieName = "dsh_gateway_session"
@@ -176,12 +160,6 @@ func Load(path string) (Config, error) {
 	}
 	if c.KeyCheckBurst, err = boundedInt(m["KEY_CHECK_BURST"], 4); err != nil {
 		return Config{}, fmtErr("KEY_CHECK_BURST", err)
-	}
-	if c.SecureCookie, err = parseBool(m["SECURE_COOKIE"], true); err != nil {
-		return Config{}, fmtErr("SECURE_COOKIE", err)
-	}
-	if c.SecureCookie != (c.PublicScheme == "https") {
-		return Config{}, errors.New("SECURE_COOKIE must be true for https and false for http")
 	}
 	if c.RequireClientIdentity, err = parseBool(m["REQUIRE_CLIENT_IDENTITY"], false); err != nil {
 		return Config{}, fmtErr("REQUIRE_CLIENT_IDENTITY", err)

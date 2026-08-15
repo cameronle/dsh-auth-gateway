@@ -34,7 +34,7 @@ func main() {
 	}
 	g, err := gateway.New(gateway.Config{
 		KeySalt: cfg.KeySalt, KeyHash: cfg.KeyHash, SessionTTL: cfg.SessionTTL,
-		CookieName: cfg.CookieName, SecureCookie: cfg.SecureCookie, PublicScheme: cfg.PublicScheme, HostPolicy: cfg.HostPolicy, ExpectedHost: cfg.ExpectedHost,
+		CookieName: cfg.CookieName, PublicScheme: cfg.PublicScheme, ExpectedHost: cfg.ExpectedHost,
 		TrustedProxyIP: cfg.TrustedProxyIP, ClientIPHeader: cfg.ClientIPHeader, RequireClientIdentity: cfg.RequireClientIdentity,
 		FailureBurst: cfg.FailureBurst, FailureRefill: cfg.FailureRefill, GlobalBurst: cfg.GlobalBurst, GlobalRefill: cfg.GlobalRefill,
 		StateTTL: cfg.StateTTL, StateMaxClients: cfg.StateMaxClients, CleanupInterval: cfg.CleanupInterval, SessionMax: cfg.SessionMax,

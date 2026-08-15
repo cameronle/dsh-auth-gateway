@@ -6,28 +6,36 @@ import (
 	"testing"
 )
 
-func TestLoadDefaultsToDynamicHTTPSWithoutExpectedHost(t *testing.T) {
-	cfg := loadTransportConfig(t, "SECURE_COOKIE=true\n")
-	if cfg.PublicScheme != "https" || cfg.HostPolicy != "request" || cfg.ExpectedHost != "" {
-		t.Fatalf("bad dynamic defaults: %#v", cfg)
+func TestLoadDefaultsToDynamicHTTPSWithoutTransportFlags(t *testing.T) {
+	cfg := loadTransportConfig(t, "")
+	if cfg.PublicScheme != "https" || cfg.ExpectedHost != "" {
+		t.Fatalf("bad HTTPS defaults: %#v", cfg)
 	}
 }
 
-func TestLoadAcceptsPrivateHTTPModeWithoutKnownHost(t *testing.T) {
-	cfg := loadTransportConfig(t, "PUBLIC_SCHEME=http\nHOST_POLICY=request\nSECURE_COOKIE=false\n")
-	if cfg.PublicScheme != "http" || cfg.HostPolicy != "request" || cfg.SecureCookie {
+func TestLoadAcceptsPrivateHTTPWithOnlyPublicScheme(t *testing.T) {
+	cfg := loadTransportConfig(t, "PUBLIC_SCHEME=http\n")
+	if cfg.PublicScheme != "http" || cfg.ExpectedHost != "" {
 		t.Fatalf("bad HTTP mode: %#v", cfg)
 	}
 }
 
-func TestLoadRejectsSchemeCookieAndHostPolicyContradictions(t *testing.T) {
+func TestLoadRejectsInvalidPublicScheme(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "config.env")
+	body := "KEY_HASH=sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nPUBLIC_SCHEME=ftp\n"
+	if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected invalid scheme rejection")
+	}
+}
+
+func TestLoadRejectsRemovedTransportKeys(t *testing.T) {
 	for _, extra := range []string{
-		"PUBLIC_SCHEME=http\nSECURE_COOKIE=true\n",
-		"PUBLIC_SCHEME=https\nSECURE_COOKIE=false\n",
-		"PUBLIC_SCHEME=ftp\nSECURE_COOKIE=true\n",
-		"HOST_POLICY=fixed\nSECURE_COOKIE=true\n",
-		"HOST_POLICY=request\nEXPECTED_HOST=dsh.example.test\nSECURE_COOKIE=true\n",
-		"HOST_POLICY=anything\nSECURE_COOKIE=true\n",
+		"SECURE_COOKIE=true\n",
+		"HOST_POLICY=request\n",
 	} {
 		d := t.TempDir()
 		p := filepath.Join(d, "config.env")
@@ -36,15 +44,22 @@ func TestLoadRejectsSchemeCookieAndHostPolicyContradictions(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := Load(p); err == nil {
-			t.Fatalf("expected rejection for %q", extra)
+			t.Fatalf("expected removed key rejection for %q", extra)
 		}
 	}
 }
 
-func TestLoadTreatsLegacyExpectedHostAsFixedHTTPS(t *testing.T) {
-	cfg := loadTransportConfig(t, "EXPECTED_HOST=DSH.EXAMPLE.TEST\nSECURE_COOKIE=true\n")
-	if cfg.PublicScheme != "https" || cfg.HostPolicy != "fixed" || cfg.ExpectedHost != "dsh.example.test" {
+func TestLoadTreatsLegacyExpectedHostAsOptionalFixedHost(t *testing.T) {
+	cfg := loadTransportConfig(t, "EXPECTED_HOST=DSH.EXAMPLE.TEST\n")
+	if cfg.PublicScheme != "https" || cfg.ExpectedHost != "dsh.example.test" {
 		t.Fatalf("legacy compatibility failed: %#v", cfg)
+	}
+}
+
+func TestLoadAllowsHTTPWithLegacyFixedHost(t *testing.T) {
+	cfg := loadTransportConfig(t, "PUBLIC_SCHEME=http\nEXPECTED_HOST=dsh-host\n")
+	if cfg.PublicScheme != "http" || cfg.ExpectedHost != "dsh-host" {
+		t.Fatalf("HTTP fixed compatibility failed: %#v", cfg)
 	}
 }
 

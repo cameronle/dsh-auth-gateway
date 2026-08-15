@@ -17,7 +17,7 @@ func redesignedConfig() Config {
 		KeyHash:               "sha256:" + base64.RawURLEncoding.EncodeToString(digest[:]),
 		SessionTTL:            time.Hour,
 		CookieName:            "dsh_gateway_session",
-		SecureCookie:          true,
+		PublicScheme:          "https",
 		ExpectedHost:          "dsh.example.test",
 		TrustedProxyIP:        "127.0.0.1",
 		ClientIPHeader:        "X-DSH-Client-IP",

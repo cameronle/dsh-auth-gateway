@@ -34,7 +34,7 @@ func TestLoadAllowsGroupReadableConfig(t *testing.T) {
 func TestLoadParsesDurationsAndRequiredValues(t *testing.T) {
 	d := t.TempDir()
 	p := filepath.Join(d, "config.env")
-	body := "LISTEN=127.0.0.1:18081\nKEY_SALT=c2FsdHNhbHRzYWx0c2FsdA\nKEY_HASH=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nSESSION_TTL=12h\nCOOKIE_NAME=dsh_gateway_session\nSECURE_COOKIE=true\nTRUSTED_PROXY_IP=127.0.0.1\nEXPECTED_HOST=dsh.example.test\n"
+	body := "LISTEN=127.0.0.1:18081\nKEY_SALT=c2FsdHNhbHRzYWx0c2FsdA\nKEY_HASH=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nSESSION_TTL=12h\nCOOKIE_NAME=dsh_gateway_session\nTRUSTED_PROXY_IP=127.0.0.1\nEXPECTED_HOST=dsh.example.test\n"
 	if err := os.WriteFile(p, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestLoadParsesDurationsAndRequiredValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != "127.0.0.1:18081" || cfg.SessionTTL.String() != "12h0m0s" || !cfg.SecureCookie {
+	if cfg.Listen != "127.0.0.1:18081" || cfg.SessionTTL.String() != "12h0m0s" || cfg.PublicScheme != "https" {
 		t.Fatalf("bad config: %#v", cfg)
 	}
 }

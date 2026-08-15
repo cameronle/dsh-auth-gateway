@@ -10,7 +10,6 @@ import (
 func TestDynamicHostPolicyAcceptsChangingHTTPSHosts(t *testing.T) {
 	cfg := testConfig()
 	cfg.PublicScheme = "https"
-	cfg.HostPolicy = "request"
 	g, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -29,8 +28,6 @@ func TestDynamicHostPolicyAcceptsChangingHTTPSHosts(t *testing.T) {
 func TestHTTPDynamicHostOriginAndCookie(t *testing.T) {
 	cfg := testConfig()
 	cfg.PublicScheme = "http"
-	cfg.HostPolicy = "request"
-	cfg.SecureCookie = false
 	g, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -61,8 +58,6 @@ func TestConfiguredSchemeRejectsOriginSchemeOrAuthorityMismatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig()
 			cfg.PublicScheme = tc.scheme
-			cfg.HostPolicy = "request"
-			cfg.SecureCookie = tc.scheme == "https"
 			g, err := New(cfg)
 			if err != nil {
 				t.Fatal(err)
@@ -82,7 +77,6 @@ func TestConfiguredSchemeRejectsOriginSchemeOrAuthorityMismatch(t *testing.T) {
 func TestFixedHostPolicyRemainsOptionalCompatibilityMode(t *testing.T) {
 	cfg := testConfig()
 	cfg.PublicScheme = "https"
-	cfg.HostPolicy = "fixed"
 	cfg.ExpectedHost = "dsh.example.test"
 	g, err := New(cfg)
 	if err != nil {

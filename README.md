@@ -40,13 +40,13 @@ The gateway and DSH listeners remain loopback-only in both topologies.
 
 ## Dynamic Host and Origin policy
 
-The recommended configuration is:
+The only transport setting is:
 
 ```env
 PUBLIC_SCHEME=https
-HOST_POLICY=request
-SECURE_COOKIE=true
 ```
+
+`PUBLIC_SCHEME` defaults to `https` when omitted. It controls three related behaviors: browser Origin validation, default-port normalization (`443` or `80`), and whether the session cookie receives the `Secure` attribute. These behaviors are deliberately derived from one setting so contradictory cookie/protocol configurations are impossible.
 
 The gateway does not need to know the public domain, private IP, MagicDNS name, or external port. For browser state-changing requests, a present `Origin` must use `PUBLIC_SCHEME` and its normalized authority must exactly match the current request `Host`.
 
@@ -58,24 +58,21 @@ http://100.64.12.8:19080
 http://dsh-host:19080
 ```
 
-Optional fixed-host compatibility/extra restriction remains available:
+Optional legacy/extra fixed-host restriction remains available:
 
 ```env
-HOST_POLICY=fixed
 EXPECTED_HOST=dsh.example.com
 ```
 
-Omitting `HOST_POLICY` while setting `EXPECTED_HOST` retains the legacy fixed-HTTPS behavior. `EXPECTED_HOST` is not required for new deployments.
+When `EXPECTED_HOST` is omitted, any syntactically valid dynamic Host is accepted and browser state changes still require `Origin == Host`. When it is present, the gateway additionally requires that exact hostname. It is not required or recommended for deployments whose domain or address may change.
 
-HTTP mode must be explicit and internally consistent:
+HTTP mode requires only:
 
 ```env
 PUBLIC_SCHEME=http
-HOST_POLICY=request
-SECURE_COOKIE=false
 ```
 
-The service rejects HTTP with a Secure cookie and HTTPS with an insecure cookie instead of silently weakening or breaking the session configuration.
+The gateway automatically omits the cookie `Secure` attribute in HTTP mode and adds it in HTTPS mode. `SECURE_COOKIE` and `HOST_POLICY` are intentionally not configuration keys.
 
 ## Client identity and rate limiting
 
@@ -116,7 +113,7 @@ The command prints the plaintext key once plus a versioned `KEY_HASH=sha256:...`
 
 ## Configuration and deployment
 
-Copy `configs/config.example.env` to `/etc/dsh-auth-gateway/config.env`, replace generated values, and set mode `0600`. A root-owned `0640 root:dsh-auth` file is also accepted for the packaged service; group write/execute and all permissions for other users are rejected.
+Copy `configs/config.example.env` to `/etc/dsh-auth-gateway/config.env`, replace generated values, and set mode `0600`. A root-owned `0640 root:dsh-auth` file is also accepted for the packaged service; group write/execute and all permissions for other users are rejected. Unknown, duplicate, removed, and deprecated configuration keys fail startup instead of being silently ignored.
 
 Keep separate gateway processes/configs/cookie names for simultaneous public HTTPS and private HTTP entry points. Both may share the same management-key digest and DSH upstream.
 

@@ -29,9 +29,7 @@ type Config struct {
 	KeyHash               string
 	SessionTTL            time.Duration
 	CookieName            string
-	SecureCookie          bool
 	PublicScheme          string
-	HostPolicy            string
 	ExpectedHost          string
 	TrustedProxyIP        string
 	ClientIPHeader        string
@@ -91,18 +89,10 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.PublicScheme != "http" && cfg.PublicScheme != "https" {
 		return nil, errors.New("public scheme must be http or https")
 	}
-	if cfg.HostPolicy != "request" && cfg.HostPolicy != "fixed" {
-		return nil, errors.New("host policy must be request or fixed")
-	}
-	if cfg.SecureCookie != (cfg.PublicScheme == "https") {
-		return nil, errors.New("secure cookie must match public scheme")
-	}
-	if cfg.HostPolicy == "fixed" {
+	if cfg.ExpectedHost != "" {
 		if _, ok := canonicalAuthority(cfg.PublicScheme, cfg.ExpectedHost); !ok {
-			return nil, errors.New("fixed host policy requires a valid expected host")
+			return nil, errors.New("invalid expected host")
 		}
-	} else if cfg.ExpectedHost != "" {
-		return nil, errors.New("expected host is only valid with fixed host policy")
 	}
 	g := &Gateway{cfg: cfg, now: time.Now, sessions: make(map[[sha256.Size]byte]session), clients: make(map[string]*bucket), legacySem: make(chan struct{}, cfg.KeyCheckConcurrency), stop: make(chan struct{}), done: make(chan struct{})}
 	if strings.HasPrefix(cfg.KeyHash, "sha256:") {
@@ -147,13 +137,7 @@ func defaults(c *Config) {
 	if c.PublicScheme == "" {
 		c.PublicScheme = "https"
 	}
-	if c.HostPolicy == "" {
-		if c.ExpectedHost != "" {
-			c.HostPolicy = "fixed"
-		} else {
-			c.HostPolicy = "request"
-		}
-	}
+
 	if c.ClientIPHeader == "" {
 		c.ClientIPHeader = "X-DSH-Client-IP"
 	}
@@ -226,7 +210,7 @@ func (g *Gateway) Handler() http.Handler {
 func (g *Gateway) requireValidHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, ok := canonicalAuthority(g.cfg.PublicScheme, r.Host)
-		if !ok || (g.cfg.HostPolicy == "fixed" && h != expectedAuthority(g.cfg.PublicScheme, g.cfg.ExpectedHost)) {
+		if !ok || (g.cfg.ExpectedHost != "" && h != expectedAuthority(g.cfg.PublicScheme, g.cfg.ExpectedHost)) {
 			http.Error(w, "forbidden", 403)
 			return
 		}
@@ -311,7 +295,7 @@ func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 	}
 	g.sessions[sha256.Sum256([]byte(token))] = session{expires: now.Add(g.cfg.SessionTTL)}
 	g.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: g.cfg.CookieName, Value: token, Path: "/", MaxAge: int(g.cfg.SessionTTL.Seconds()), HttpOnly: true, Secure: g.cfg.SecureCookie, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: g.cfg.CookieName, Value: token, Path: "/", MaxAge: int(g.cfg.SessionTTL.Seconds()), HttpOnly: true, Secure: g.cfg.PublicScheme == "https", SameSite: http.SameSiteStrictMode})
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(204)
 	g.audit(r, "login", "success", "", identity)
@@ -369,7 +353,7 @@ func (g *Gateway) logout(w http.ResponseWriter, r *http.Request) {
 		delete(g.sessions, sha256.Sum256([]byte(c.Value)))
 		g.mu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: g.cfg.CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: g.cfg.SecureCookie, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: g.cfg.CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: g.cfg.PublicScheme == "https", SameSite: http.SameSiteStrictMode})
 	w.WriteHeader(204)
 	g.audit(r, "logout", "success", "", "")
 }

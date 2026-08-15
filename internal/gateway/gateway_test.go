@@ -19,7 +19,7 @@ func testConfig() Config {
 		KeyHash:        base64.RawURLEncoding.EncodeToString(hash),
 		SessionTTL:     time.Hour,
 		CookieName:     "dsh_gateway_session",
-		SecureCookie:   true,
+		PublicScheme:   "https",
 		MaxFailures:    3,
 		FailureWindow:  time.Minute,
 		Lockout:        5 * time.Minute,
