@@ -197,6 +197,33 @@ func TestAuditDoesNotContainCredential(t *testing.T) {
 	}
 }
 
+func TestLoginPageFollowsSystemThemeAndHasAccessibleForm(t *testing.T) {
+	g, err := New(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://auth/__dsh_auth/login", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`prefers-color-scheme:dark`,
+		`name="color-scheme" content="light dark"`,
+		`name="theme-color"`,
+		`<label for="k">Management key</label>`,
+		`aria-live="polite"`,
+		`Signing in…`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("login page missing %q", want)
+		}
+	}
+}
+
 func TestHashShape(t *testing.T) {
 	salt := []byte("0123456789abcdef")
 	h := deriveKey([]byte("x"), salt)

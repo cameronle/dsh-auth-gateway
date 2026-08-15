@@ -350,4 +350,49 @@ func (g *Gateway) securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-const loginHTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>DSH Login</title><style>body{font:16px system-ui;background:#0b1220;color:#e5edf8;display:grid;place-items:center;min-height:100vh;margin:0}.box{width:min(420px,88vw);padding:28px;border:1px solid #263650;border-radius:16px;background:#111c2e}input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:12px;border-radius:9px}button{cursor:pointer}#msg{min-height:1.5em;color:#ff9a9a}</style></head><body><main class="box"><h1>DeepSeek Harness</h1><p>Enter the management key.</p><form id="f"><input id="k" type="password" autocomplete="current-password" required><button>Sign in</button></form><p id="msg"></p></main><script>f.onsubmit=async(e)=>{e.preventDefault();msg.textContent='';let r=await fetch('/__dsh_auth/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k.value})});k.value='';if(r.ok)location.href='/';else msg.textContent=r.status===429?'Too many attempts. Try later.':'Invalid management key.'}</script></body></html>`
+const loginHTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+<title>Sign in · DeepSeek Harness</title>
+<style>
+:root{color-scheme:light dark;--bg:#fafafa;--surface:#fff;--text:#171717;--muted:#666;--line:rgba(0,0,0,.12);--field:#fff;--button:#171717;--button-text:#fff;--focus:#0072f5;--error:#d93025}
+@media(prefers-color-scheme:dark){:root{--bg:#0a0a0a;--surface:#111;--text:#ededed;--muted:#8f8f8f;--line:rgba(255,255,255,.14);--field:#111;--button:#ededed;--button-text:#171717;--focus:#52a8ff;--error:#ff7b72}}
+*{box-sizing:border-box}
+html,body{min-height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+.page{min-height:100svh;display:grid;place-items:center;padding:max(24px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left))}
+.panel{width:min(100%,360px)}
+.mark{width:28px;height:28px;margin-bottom:28px;color:var(--text)}
+h1{margin:0;font-size:28px;line-height:1.15;letter-spacing:-.9px;font-weight:600}
+.intro{margin:10px 0 28px;color:var(--muted)}
+label{display:block;margin-bottom:8px;font-size:13px;font-weight:500}
+input,button{display:block;width:100%;height:48px;border:0;border-radius:8px;font:inherit}
+input{padding:0 14px;background:var(--field);color:var(--text);box-shadow:0 0 0 1px var(--line);outline:none}
+input::placeholder{color:var(--muted)}
+input:focus-visible{box-shadow:0 0 0 2px var(--focus)}
+button{margin-top:14px;background:var(--button);color:var(--button-text);font-weight:550;cursor:pointer;transition:opacity .15s ease,transform .05s ease}
+button:hover{opacity:.88}
+button:active{transform:translateY(1px)}
+button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+button:disabled{cursor:wait;opacity:.55}
+#msg{min-height:21px;margin:12px 0 0;color:var(--error);font-size:13px}
+@media(max-height:520px){.page{place-items:start center}.panel{padding-top:20px}.mark{margin-bottom:20px}.intro{margin-bottom:20px}}
+</style>
+</head>
+<body>
+<main class="page"><section class="panel" aria-labelledby="title">
+<svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 3.3 7v10L12 22l8.7-5V7L12 2Zm0 2.3 6.7 3.8v7.8L12 19.7l-6.7-3.8V8.1L12 4.3Z"/></svg>
+<h1 id="title">DeepSeek Harness</h1>
+<p class="intro">Enter your management key to continue.</p>
+<form id="f"><label for="k">Management key</label><input id="k" name="key" type="password" autocomplete="current-password" placeholder="Enter your key" spellcheck="false" autocapitalize="none" required><button id="submit" type="submit">Sign in</button></form>
+<p id="msg" role="alert" aria-live="polite"></p>
+</section></main>
+<script>f.onsubmit=async(e)=>{e.preventDefault();msg.textContent='';submit.disabled=true;submit.textContent='Signing in…';try{let r=await fetch('/__dsh_auth/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k.value})});k.value='';if(r.ok)location.href='/';else msg.textContent=r.status===429?'Too many attempts. Try again later.':'Invalid management key.'}catch(_){msg.textContent='Unable to sign in. Try again.'}finally{submit.disabled=false;submit.textContent='Sign in'}}</script>
+</body>
+</html>`
