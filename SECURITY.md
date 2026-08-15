@@ -20,6 +20,8 @@ For state-changing browser requests, the gateway requires a present Origin to us
 
 Never expose the private HTTP listener to the public Internet, an untrusted Wi-Fi/VLAN, or Tailscale Funnel. Prefer HTTPS if the underlying network cannot be trusted.
 
+The private Caddy example binds to loopback unless `DSH_PRIVATE_BIND` is explicitly set. After `forward_auth` succeeds, both Caddy examples remove `Authorization` and `Cookie` before proxying to DSH so gateway credentials are not disclosed to the upstream application.
+
 ## Secrets
 
 Never store the management key, production hash file, session data, Cloudflare token, Tailscale auth key, or request Authorization/Cookie headers in this repository or CI logs.

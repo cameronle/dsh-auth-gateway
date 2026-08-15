@@ -15,6 +15,8 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: CGO_ENABLED=0 go build ./cmd/dsh-auth-gateway
+      - run: python3 scripts/check_caddy_templates.py
+      - run: python3 scripts/test_audit_fail_closed.py
       - name: Validate Caddy examples
         run: |
           sudo apt-get update

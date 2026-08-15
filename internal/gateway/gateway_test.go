@@ -228,6 +228,9 @@ func TestSameOriginNormalizesHTTPSDefaultPortAndRejectsUnsafeOrigins(t *testing.
 		{name: "userinfo", origin: "https://user@dsh.example.test", host: "dsh.example.test"},
 		{name: "path", origin: "https://dsh.example.test/path", host: "dsh.example.test"},
 		{name: "query", origin: "https://dsh.example.test?x=1", host: "dsh.example.test"},
+		{name: "empty query marker", origin: "https://dsh.example.test?", host: "dsh.example.test"},
+		{name: "empty fragment marker", origin: "https://dsh.example.test#", host: "dsh.example.test"},
+		{name: "empty query and fragment markers", origin: "https://dsh.example.test?#", host: "dsh.example.test"},
 		{name: "opaque null", origin: "null", host: "dsh.example.test"},
 		{name: "non HTTPS", origin: "http://dsh.example.test", host: "dsh.example.test"},
 	} {

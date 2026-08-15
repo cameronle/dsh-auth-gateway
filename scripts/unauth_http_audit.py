@@ -5,6 +5,8 @@ import os
 import ssl
 
 HOST = os.environ.get("DSH_AUDIT_HOST", "dsh.example.com")
+PORT = int(os.environ.get("DSH_AUDIT_PORT", "443"))
+SCHEME = os.environ.get("DSH_AUDIT_SCHEME", "https").lower()
 PATHS = [
     "/",
     "/index.html",
@@ -41,8 +43,13 @@ HEADERS = [
 
 
 def request(method, path, headers=None, body=None):
-    ctx = ssl.create_default_context()
-    c = http.client.HTTPSConnection(HOST, 443, context=ctx, timeout=15)
+    if SCHEME == "https":
+        ctx = ssl.create_default_context()
+        c = http.client.HTTPSConnection(HOST, PORT, context=ctx, timeout=15)
+    elif SCHEME == "http":
+        c = http.client.HTTPConnection(HOST, PORT, timeout=15)
+    else:
+        raise ValueError("DSH_AUDIT_SCHEME must be http or https")
     h = {"User-Agent": "dsh-unauth-audit/1", **(headers or {})}
     c.request(method, path, body=body, headers=h)
     r = c.getresponse()
@@ -53,6 +60,8 @@ def request(method, path, headers=None, body=None):
 
 
 failures = []
+attempts = 0
+responses = 0
 for path in PATHS:
     for idx, headers in enumerate(HEADERS):
         method = "GET"
@@ -69,10 +78,13 @@ for path in PATHS:
         elif path == "/__dsh_auth/logout":
             method = "POST"
         try:
+            attempts += 1
             status, ctype, size, preview = request(method, path, headers, body)
         except Exception as e:
             print("ERROR", method, path, idx, type(e).__name__, str(e))
+            failures.append((method, path, idx, "ERROR", type(e).__name__, str(e)[:80]))
             continue
+        responses += 1
         if path in ("/__dsh_auth/login", "/healthz"):
             allowed = status == 200 if idx not in (4, 6) else status == 403
         elif path == "/__dsh_auth/logout":
@@ -82,5 +94,6 @@ for path in PATHS:
         if not allowed:
             failures.append((method, path, idx, status, ctype, preview[:80]))
         print(f"{method:4} {status:3} h{idx} {path}")
+print("SUMMARY", json.dumps({"attempts": attempts, "responses": responses}, ensure_ascii=False))
 print("FAILURES", json.dumps(failures, ensure_ascii=False))
-raise SystemExit(1 if failures else 0)
+raise SystemExit(1 if failures or responses != attempts or attempts == 0 else 0)

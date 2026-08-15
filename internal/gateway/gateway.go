@@ -631,7 +631,7 @@ func (g *Gateway) sameOrigin(r *http.Request) bool {
 	}
 	o := origins[0]
 	u, err := url.Parse(o)
-	if err != nil || !strings.EqualFold(u.Scheme, g.cfg.PublicScheme) || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || !strings.EqualFold(u.Scheme, g.cfg.PublicScheme) || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(o, "#") {
 		return false
 	}
 	originAuthority, ok := canonicalAuthority(g.cfg.PublicScheme, u.Host)

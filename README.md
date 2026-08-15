@@ -34,7 +34,7 @@ Browser / CLI
        -> DeepSeek Harness 127.0.0.1:3080
 ```
 
-Use `configs/Caddyfile.private-http.example` as a starting point. Plain HTTP is appropriate only on a trusted LAN or inside a Tailscale/WireGuard encrypted path. Restrict the listener with the host firewall, interface binding, and/or Tailscale ACLs. Never expose it to the public Internet or enable Tailscale Funnel for this mode.
+Use `configs/Caddyfile.private-http.example` as a starting point. It fails closed to `127.0.0.1` until `DSH_PRIVATE_BIND` is explicitly set to the intended LAN or Tailscale address. Plain HTTP is appropriate only on a trusted LAN or inside a Tailscale/WireGuard encrypted path. Restrict the listener with the host firewall, interface binding, and/or Tailscale ACLs. Never expose it to the public Internet or enable Tailscale Funnel for this mode.
 
 The gateway and DSH listeners remain loopback-only in both topologies.
 
@@ -124,6 +124,7 @@ After `forward_auth` succeeds, Caddy normalizes the DSH upstream to `Host: 127.0
 - The gateway listener must remain loopback-only; non-loopback `LISTEN` values are rejected.
 - Authentication does not encrypt plain HTTP. An on-path LAN attacker can steal the management key or session cookie.
 - Network exposure for dynamic private hosts is controlled by interface binding, firewall rules, and optional Tailscale ACLs—not by a hard-coded domain.
+- Caddy strips the gateway `Authorization` and `Cookie` credentials before forwarding authenticated requests to DSH.
 - Authorization and Cookie values are never included in audit records.
 - Cloudflare challenges must not be applied to DSH API or WebSocket paths.
 - This boundary does not protect against an attacker who already controls the host.

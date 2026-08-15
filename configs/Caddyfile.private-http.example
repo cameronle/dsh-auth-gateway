@@ -7,6 +7,10 @@
 # with the listening interface/firewall/Tailscale ACL; never expose this plain
 # HTTP listener to the public Internet.
 http://:19080 {
+	# Fail closed when no private address is configured. Set DSH_PRIVATE_BIND to
+	# the selected LAN or Tailscale address before enabling direct private access.
+	bind {$DSH_PRIVATE_BIND:127.0.0.1}
+
 	log {
 		output stdout
 		format json
@@ -41,6 +45,9 @@ http://:19080 {
 		reverse_proxy 127.0.0.1:3080 {
 			header_up Host 127.0.0.1:3080
 			header_up Origin http://127.0.0.1:3080
+			# Authentication is complete; do not disclose gateway credentials to DSH.
+			header_up -Authorization
+			header_up -Cookie
 			header_up -X-DSH-Client-IP
 			header_up -CF-Connecting-IP
 		}
