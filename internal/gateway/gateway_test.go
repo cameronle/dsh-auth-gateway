@@ -367,6 +367,10 @@ func TestLoginPageFollowsSystemThemeAndHasAccessibleForm(t *testing.T) {
 		`<label for="k">Management key</label>`,
 		`aria-live="polite"`,
 		`Signing in…`,
+		`autofocus`,
+		`Toggle password visibility`,
+		`redirect`,
+		`Network error`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("login page missing %q", want)
