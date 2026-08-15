@@ -30,6 +30,8 @@ http://:19080 {
 	handle {
 		forward_auth 127.0.0.1:19081 {
 			uri /verify
+			header_up X-Forwarded-Uri {http.request.uri}
+			header_up X-Forwarded-Method {http.request.method}
 			header_up X-DSH-Client-IP {http.request.remote.host}
 			header_up -CF-Connecting-IP
 			header_up -X-Forwarded-For

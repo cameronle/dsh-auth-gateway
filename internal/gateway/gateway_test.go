@@ -480,3 +480,79 @@ func TestVerifyRedirectsBrowserRequestsToLogin(t *testing.T) {
 		t.Fatalf("invalid Bearer got %d, want 401", recBearer.Code)
 	}
 }
+
+func TestSessionSlidingExpiration(t *testing.T) {
+	cfg := testConfig()
+	cfg.SessionTTL = 2 * time.Hour
+	g, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+
+	curTime := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return curTime }
+
+	// 1. Initial Login
+	login := httptest.NewRequest(http.MethodPost, "http://auth/__dsh_auth/session", strings.NewReader(`{"key":"test-management-key-with-enough-entropy"}`))
+	login.Header.Set("Content-Type", "application/json")
+	login.Header.Set("Origin", "https://dsh.example.test")
+	login.Host = "dsh.example.test"
+	login.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, login)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("login failed: %d", rec.Code)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected 1 cookie, got %d", len(cookies))
+	}
+	cookie := cookies[0]
+
+	// 2. Advance 30 mins (remaining 1h30m > 1h half-window) -> valid, no extension needed
+	curTime = curTime.Add(30 * time.Minute)
+	req := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("verify at +30m got %d, want 204", rec.Code)
+	}
+
+	// 3. Advance to +1h15m (remaining 45m < 1h half-window) -> valid, triggers sliding extension to curTime + 2h
+	curTime = curTime.Add(45 * time.Minute) // now +1h15m from start (13:15)
+	req = httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("verify at +1h15m got %d, want 204", rec.Code)
+	}
+
+	// 4. Advance to +2h30m from start (14:30).
+	// Without sliding expiration, initial 2h TTL would have expired at 14:00.
+	// With sliding expiration, new expiration is 13:15 + 2h = 15:15.
+	curTime = curTime.Add(1 * time.Hour + 15 * time.Minute) // 14:30
+	req = httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("verify at +2h30m (after original expiration) got %d, want 204", rec.Code)
+	}
+
+	// 5. Inactive for 3 hours (advance to 17:30) -> session expires
+	curTime = curTime.Add(3 * time.Hour)
+	req = httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("verify after 3h inactivity got %d, want 401", rec.Code)
+	}
+}

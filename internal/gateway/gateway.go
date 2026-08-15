@@ -566,9 +566,14 @@ func (g *Gateway) validSession(token string) bool {
 	if !ok {
 		return false
 	}
-	if !g.now().Before(s.expires) {
+	now := g.now()
+	if !now.Before(s.expires) {
 		delete(g.sessions, k)
 		return false
+	}
+	if s.expires.Sub(now) < g.cfg.SessionTTL/2 {
+		s.expires = now.Add(g.cfg.SessionTTL)
+		g.sessions[k] = s
 	}
 	return true
 }
