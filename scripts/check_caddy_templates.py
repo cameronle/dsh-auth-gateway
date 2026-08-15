@@ -11,7 +11,4 @@ for name, text in (("public", public), ("private", private)):
         if required not in text:
             raise SystemExit(f"{name} template does not strip {required.removeprefix('header_up -')}")
 
-if "bind {$DSH_PRIVATE_BIND:127.0.0.1}" not in private:
-    raise SystemExit("private template does not fail closed to loopback binding")
-
 print("Caddy template policy checks passed")

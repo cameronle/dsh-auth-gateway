@@ -7,10 +7,6 @@
 # with the listening interface/firewall/Tailscale ACL; never expose this plain
 # HTTP listener to the public Internet.
 http://:19080 {
-	# Fail closed when no private address is configured. Set DSH_PRIVATE_BIND to
-	# the selected LAN or Tailscale address before enabling direct private access.
-	bind {$DSH_PRIVATE_BIND:127.0.0.1}
-
 	log {
 		output stdout
 		format json

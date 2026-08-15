@@ -20,7 +20,7 @@ For state-changing browser requests, the gateway requires a present Origin to us
 
 Never expose the private HTTP listener to the public Internet, an untrusted Wi-Fi/VLAN, or Tailscale Funnel. Prefer HTTPS if the underlying network cannot be trusted.
 
-The private Caddy example binds to loopback unless `DSH_PRIVATE_BIND` is explicitly set. After `forward_auth` succeeds, both Caddy examples remove `Authorization` and `Cookie` before proxying to DSH so gateway credentials are not disclosed to the upstream application.
+The private Caddy example intentionally listens on the host's available interfaces to support dynamic DHCP and Tailscale addresses without an extra environment variable. Its network boundary must therefore be enforced by the host firewall and/or Tailscale ACLs. After `forward_auth` succeeds, both Caddy examples remove `Authorization` and `Cookie` before proxying to DSH so gateway credentials are not disclosed to the upstream application.
 
 ## Secrets
 
