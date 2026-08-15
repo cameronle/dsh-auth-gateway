@@ -53,6 +53,7 @@ func Load(path string) (Config, error) {
 	if info.Mode().Perm()&0007 != 0 || info.Mode().Perm()&0030 != 0 {
 		return Config{}, errors.New("config permissions must be 0600 or 0640")
 	}
+	// #nosec G304 -- path is an explicit operator-controlled CLI argument; file permissions and contents are validated before use.
 	f, err := os.Open(path)
 	if err != nil {
 		return Config{}, err

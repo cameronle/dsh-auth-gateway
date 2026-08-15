@@ -211,7 +211,7 @@ func (g *Gateway) requireValidHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, ok := canonicalAuthority(g.cfg.PublicScheme, r.Host)
 		if !ok || (g.cfg.ExpectedHost != "" && h != expectedAuthority(g.cfg.PublicScheme, g.cfg.ExpectedHost)) {
-			http.Error(w, "forbidden", 403)
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -224,7 +224,7 @@ func (g *Gateway) health(w http.ResponseWriter, _ *http.Request) {
 }
 func (g *Gateway) loginPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", 405)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -234,17 +234,17 @@ func (g *Gateway) loginPage(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", 405)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !g.sameOrigin(r) {
 		g.audit(r, "login", "cross-origin", "", "")
-		http.Error(w, "forbidden", 403)
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || !strings.EqualFold(mt, "application/json") {
-		http.Error(w, "unsupported media type", 415)
+		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
@@ -295,6 +295,7 @@ func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 	}
 	g.sessions[sha256.Sum256([]byte(token))] = session{expires: now.Add(g.cfg.SessionTTL)}
 	g.mu.Unlock()
+	// #nosec G124 -- Secure is deliberately derived from the validated external scheme; HTTP is an explicit private-network mode.
 	http.SetCookie(w, &http.Cookie{Name: g.cfg.CookieName, Value: token, Path: "/", MaxAge: int(g.cfg.SessionTTL.Seconds()), HttpOnly: true, Secure: g.cfg.PublicScheme == "https", SameSite: http.SameSiteStrictMode})
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(204)
@@ -340,12 +341,12 @@ func (g *Gateway) verify(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) logout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", 405)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !g.sameOrigin(r) {
 		g.audit(r, "logout", "cross-origin", "", "")
-		http.Error(w, "forbidden", 403)
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	if c, e := r.Cookie(g.cfg.CookieName); e == nil {
@@ -353,6 +354,7 @@ func (g *Gateway) logout(w http.ResponseWriter, r *http.Request) {
 		delete(g.sessions, sha256.Sum256([]byte(c.Value)))
 		g.mu.Unlock()
 	}
+	// #nosec G124 -- Secure is deliberately derived from the validated external scheme; HTTP is an explicit private-network mode.
 	http.SetCookie(w, &http.Cookie{Name: g.cfg.CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: g.cfg.PublicScheme == "https", SameSite: http.SameSiteStrictMode})
 	w.WriteHeader(204)
 	g.audit(r, "logout", "success", "", "")
@@ -600,7 +602,7 @@ func randomToken() (string, error) {
 }
 func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
-	http.Error(w, "unauthorized", 401)
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 func rateLimited(w http.ResponseWriter, d time.Duration) {
 	seconds := int(math.Ceil(d.Seconds()))
@@ -609,11 +611,11 @@ func rateLimited(w http.ResponseWriter, d time.Duration) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
-	http.Error(w, "too many attempts", 429)
+	http.Error(w, "too many attempts", http.StatusTooManyRequests)
 }
 func serviceUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
-	http.Error(w, "service unavailable", 503)
+	http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 }
 func ceilDuration(d time.Duration) time.Duration {
 	if d <= 0 {

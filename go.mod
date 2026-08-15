@@ -1,5 +1,5 @@
 module github.com/cameronle/dsh-auth-gateway
 
-go 1.19
+go 1.26
 
-require golang.org/x/crypto v0.14.0 // indirect
+require golang.org/x/crypto v0.55.0
