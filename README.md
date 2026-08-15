@@ -4,8 +4,11 @@ A small authentication boundary for exposing a loopback-only DeepSeek Harness We
 
 ## Authentication model
 
-- CLI/automation: `Authorization: Bearer <long-random-key>` on every request.
+- CLI/automation: `Authorization: Bearer <management-key>` on every request.
 - Browser: enter the same management key at `/__dsh_auth/login`; the gateway issues an `HttpOnly; SameSite=Strict` session cookie.
+- Content negotiation redirect: unauthenticated browser page requests (`GET`/`HEAD` with `Accept: text/html`) automatically redirect (`302 Found`) to `/__dsh_auth/login?redirect=...` with safe deep-link preservation. API, WebSocket, and non-HTML requests continue to receive standard `401 Unauthorized`.
+- Sliding session expiration: active sessions extend automatically (when less than half of `SESSION_TTL` remains) so long-running coding and agent workflows are never interrupted mid-session.
+- Session state awareness: authenticated users visiting `/__dsh_auth/login` see a status card with one-click actions to continue to Harness or sign out.
 - The reverse proxy uses `forward_auth` for every DSH page, asset, plugin bundle, API request, SSE route, and WebSocket upgrade.
 - New management keys use a versioned SHA-256 digest. Legacy scrypt material is accepted only as a bounded migration path.
 - Sessions are opaque random tokens stored as hashes in memory and disappear when the gateway restarts.
