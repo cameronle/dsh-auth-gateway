@@ -352,6 +352,9 @@ func TestLoginPageFollowsSystemThemeAndHasAccessibleForm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer g.Close()
+
+	// 1. Anonymous user accesses login page
 	req := httptest.NewRequest(http.MethodGet, "http://auth/__dsh_auth/login", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
 	rec := httptest.NewRecorder()
@@ -371,11 +374,50 @@ func TestLoginPageFollowsSystemThemeAndHasAccessibleForm(t *testing.T) {
 		`Toggle password visibility`,
 		`redirect`,
 		`Network error`,
+		`<body class="is-anon">`,
+		`Continue to Harness`,
+		`Sign out`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("login page missing %q", want)
 		}
 	}
+
+	// 2. Authenticated user accesses login page
+	cookie := loginAndGetCookie(t, g)
+	reqAuth := httptest.NewRequest(http.MethodGet, "http://auth/__dsh_auth/login", nil)
+	reqAuth.RemoteAddr = "127.0.0.1:1234"
+	reqAuth.AddCookie(cookie)
+	recAuth := httptest.NewRecorder()
+	g.Handler().ServeHTTP(recAuth, reqAuth)
+	if recAuth.Code != http.StatusOK {
+		t.Fatalf("authenticated login page got %d", recAuth.Code)
+	}
+	bodyAuth := recAuth.Body.String()
+	if !strings.Contains(bodyAuth, `<body class="is-authed">`) {
+		t.Fatalf("expected is-authed body class, got body=%s", bodyAuth)
+	}
+	if !strings.Contains(bodyAuth, `You are currently signed in.`) {
+		t.Fatalf("expected signed-in message")
+	}
+}
+
+func loginAndGetCookie(t *testing.T, g *Gateway) *http.Cookie {
+	login := httptest.NewRequest(http.MethodPost, "http://auth/__dsh_auth/session", strings.NewReader(`{"key":"test-management-key-with-enough-entropy"}`))
+	login.Header.Set("Content-Type", "application/json")
+	login.Header.Set("Origin", "https://dsh.example.test")
+	login.Host = "dsh.example.test"
+	login.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, login)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("login failed: %d", rec.Code)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected 1 cookie, got %d", len(cookies))
+	}
+	return cookies[0]
 }
 
 func TestHashShape(t *testing.T) {
