@@ -309,6 +309,10 @@ func (g *Gateway) verify(w http.ResponseWriter, r *http.Request) {
 	}
 	key, ok := bearer(r.Header.Values("Authorization"))
 	if !ok {
+		if g.shouldRedirectToLogin(r) {
+			g.redirectToLogin(w, r)
+			return
+		}
 		unauthorized(w)
 		return
 	}
@@ -337,6 +341,53 @@ func (g *Gateway) verify(w http.ResponseWriter, r *http.Request) {
 	}
 	g.audit(r, "verify", "invalid-bearer", "", identity)
 	unauthorized(w)
+}
+
+func (g *Gateway) shouldRedirectToLogin(r *http.Request) bool {
+	method := r.Header.Get("X-Forwarded-Method")
+	if method == "" {
+		method = r.Method
+	}
+	if !strings.EqualFold(method, http.MethodGet) && !strings.EqualFold(method, http.MethodHead) {
+		return false
+	}
+	if r.Header.Get("Upgrade") != "" || strings.EqualFold(r.Header.Get("Connection"), "upgrade") {
+		return false
+	}
+	accept := strings.ToLower(r.Header.Get("Accept"))
+	return strings.Contains(accept, "text/html")
+}
+
+func (g *Gateway) redirectToLogin(w http.ResponseWriter, r *http.Request) {
+	target := r.Header.Get("X-Forwarded-Uri")
+	if target == "" {
+		target = r.URL.RequestURI()
+	}
+	redirectURL := "/__dsh_auth/login"
+	target = sanitizeRedirectTarget(target)
+	if target != "" && target != "/" && target != "/__dsh_auth/login" {
+		redirectURL = "/__dsh_auth/login?redirect=" + url.QueryEscape(target)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Location", redirectURL)
+	w.WriteHeader(http.StatusFound)
+}
+
+func sanitizeRedirectTarget(target string) string {
+	if target == "" {
+		return ""
+	}
+	if !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") || strings.HasPrefix(target, "/\\") {
+		return ""
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil {
+		return ""
+	}
+	if strings.HasPrefix(u.Path, "/__dsh_auth/") || u.Path == "/healthz" || u.Path == "/verify" {
+		return ""
+	}
+	return target
 }
 
 func (g *Gateway) logout(w http.ResponseWriter, r *http.Request) {

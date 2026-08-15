@@ -385,3 +385,98 @@ func TestHashShape(t *testing.T) {
 		t.Fatalf("hash len=%d", len(h))
 	}
 }
+
+func TestVerifyRedirectsBrowserRequestsToLogin(t *testing.T) {
+	g, err := New(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+
+	// 1. Browser root page visit -> redirect to /__dsh_auth/login
+	req := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	rec := httptest.NewRecorder()
+	g.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("browser root got %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/__dsh_auth/login" {
+		t.Fatalf("browser root location = %q, want /__dsh_auth/login", loc)
+	}
+
+	// 2. Browser deep link visit with X-Forwarded-Uri -> redirect with target preserved
+	reqDeep := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	reqDeep.RemoteAddr = "127.0.0.1:1234"
+	reqDeep.Header.Set("Accept", "text/html,application/xhtml+xml")
+	reqDeep.Header.Set("X-Forwarded-Uri", "/workspace/project-1?tab=chat#bottom")
+	reqDeep.Header.Set("X-Forwarded-Method", "GET")
+	recDeep := httptest.NewRecorder()
+	g.Handler().ServeHTTP(recDeep, reqDeep)
+	if recDeep.Code != http.StatusFound {
+		t.Fatalf("deep link got %d, want 302", recDeep.Code)
+	}
+	wantLoc := "/__dsh_auth/login?redirect=%2Fworkspace%2Fproject-1%3Ftab%3Dchat%23bottom"
+	if loc := recDeep.Header().Get("Location"); loc != wantLoc {
+		t.Fatalf("deep link location = %q, want %q", loc, wantLoc)
+	}
+
+	// 3. Dangerous / malicious target URI -> sanitized to /__dsh_auth/login
+	for _, evil := range []string{"//evil.com", "/\\evil.com", "https://evil.com", "/__dsh_auth/login"} {
+		reqEvil := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+		reqEvil.RemoteAddr = "127.0.0.1:1234"
+		reqEvil.Header.Set("Accept", "text/html")
+		reqEvil.Header.Set("X-Forwarded-Uri", evil)
+		recEvil := httptest.NewRecorder()
+		g.Handler().ServeHTTP(recEvil, reqEvil)
+		if recEvil.Code != http.StatusFound {
+			t.Fatalf("evil target %q got %d", evil, recEvil.Code)
+		}
+		if loc := recEvil.Header().Get("Location"); loc != "/__dsh_auth/login" {
+			t.Fatalf("evil target %q location = %q, want /__dsh_auth/login", evil, loc)
+		}
+	}
+
+	// 4. API / JSON requests -> returns 401, not 302
+	reqAPI := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	reqAPI.RemoteAddr = "127.0.0.1:1234"
+	reqAPI.Header.Set("Accept", "application/json")
+	recAPI := httptest.NewRecorder()
+	g.Handler().ServeHTTP(recAPI, reqAPI)
+	if recAPI.Code != http.StatusUnauthorized {
+		t.Fatalf("API request got %d, want 401", recAPI.Code)
+	}
+
+	// 5. POST request with Accept text/html -> returns 401, not 302
+	reqPost := httptest.NewRequest(http.MethodPost, "http://auth/verify", nil)
+	reqPost.RemoteAddr = "127.0.0.1:1234"
+	reqPost.Header.Set("Accept", "text/html")
+	recPost := httptest.NewRecorder()
+	g.Handler().ServeHTTP(recPost, reqPost)
+	if recPost.Code != http.StatusUnauthorized {
+		t.Fatalf("POST request got %d, want 401", recPost.Code)
+	}
+
+	// 6. WebSocket upgrade with text/html -> returns 401
+	reqWS := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	reqWS.RemoteAddr = "127.0.0.1:1234"
+	reqWS.Header.Set("Accept", "text/html")
+	reqWS.Header.Set("Upgrade", "websocket")
+	recWS := httptest.NewRecorder()
+	g.Handler().ServeHTTP(recWS, reqWS)
+	if recWS.Code != http.StatusUnauthorized {
+		t.Fatalf("WebSocket request got %d, want 401", recWS.Code)
+	}
+
+	// 7. Request with wrong Bearer token -> always returns 401 even if Accept is text/html
+	reqBearer := httptest.NewRequest(http.MethodGet, "http://auth/verify", nil)
+	reqBearer.RemoteAddr = "127.0.0.1:1234"
+	reqBearer.Header.Set("Accept", "text/html")
+	reqBearer.Header.Set("Authorization", "Bearer invalid-token")
+	recBearer := httptest.NewRecorder()
+	g.Handler().ServeHTTP(recBearer, reqBearer)
+	if recBearer.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid Bearer got %d, want 401", recBearer.Code)
+	}
+}
