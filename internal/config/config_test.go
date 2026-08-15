@@ -75,6 +75,58 @@ func TestLoadRejectsExpectedHostWithSchemeOrPath(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnknownAndDuplicateKeys(t *testing.T) {
+	for _, extra := range []string{
+		"SURPRISE=value\n",
+		"SESSION_TTL=12h\nSESSION_TTL=24h\n",
+	} {
+		d := t.TempDir()
+		p := filepath.Join(d, "config.env")
+		body := "LISTEN=127.0.0.1:18081\nKEY_SALT=c2FsdHNhbHRzYWx0c2FsdA\nKEY_HASH=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nEXPECTED_HOST=dsh.example.test\n" + extra
+		if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); err == nil {
+			t.Fatalf("expected rejection for %q", extra)
+		}
+	}
+}
+
+func TestLoadRejectsInvalidCookieNameAndUnboundedValues(t *testing.T) {
+	for _, extra := range []string{
+		"COOKIE_NAME=bad cookie\n",
+		"SESSION_TTL=0s\n",
+		"SESSION_TTL=87601h\n",
+		"FAILURE_WINDOW=-1s\n",
+		"LOCKOUT=0s\n",
+		"MAX_FAILURES=1000001\n",
+	} {
+		d := t.TempDir()
+		p := filepath.Join(d, "config.env")
+		body := "LISTEN=127.0.0.1:18081\nKEY_SALT=c2FsdHNhbHRzYWx0c2FsdA\nKEY_HASH=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nEXPECTED_HOST=dsh.example.test\n" + extra
+		if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); err == nil {
+			t.Fatalf("expected rejection for %q", extra)
+		}
+	}
+}
+
+func TestLoadRejectsMalformedExpectedHost(t *testing.T) {
+	for _, host := range []string{"bad host", ".example.test", "example..test", "example.test.", "example.test:443", "[::1]"} {
+		d := t.TempDir()
+		p := filepath.Join(d, "config.env")
+		body := "LISTEN=127.0.0.1:18081\nKEY_SALT=c2FsdHNhbHRzYWx0c2FsdA\nKEY_HASH=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nEXPECTED_HOST=" + host + "\n"
+		if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); err == nil {
+			t.Fatalf("expected invalid host %q", host)
+		}
+	}
+}
+
 func TestLoadRejectsNonLoopbackListen(t *testing.T) {
 	d := t.TempDir()
 	p := filepath.Join(d, "config.env")

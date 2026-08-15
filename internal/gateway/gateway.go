@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -157,6 +158,11 @@ func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
+		return
+	}
 	ip := g.clientIP(r)
 	if g.blocked(ip) {
 		g.audit(r, "login", "blocked")
@@ -165,16 +171,13 @@ func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	defer r.Body.Close()
-	var body struct {
-		Key string `json:"key"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Key) > 512 {
-		g.recordFailure(ip)
-		g.audit(r, "login", "invalid")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	key, err := decodeLoginKey(r.Body)
+	if err != nil {
+		g.audit(r, "login", "malformed")
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if !g.validKey(body.Key) {
+	if !g.validKey(key) {
 		g.recordFailure(ip)
 		g.audit(r, "login", "invalid")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -195,9 +198,43 @@ func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 	g.audit(r, "login", "success")
 }
 
+func decodeLoginKey(r io.Reader) (string, error) {
+	decoder := json.NewDecoder(r)
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return "", errors.New("login body must be an object")
+	}
+	if !decoder.More() {
+		return "", errors.New("login body is missing key")
+	}
+	name, err := decoder.Token()
+	if err != nil || name != "key" {
+		return "", errors.New("login body must contain only lowercase key")
+	}
+	var key string
+	if err := decoder.Decode(&key); err != nil || key == "" || len(key) > 512 {
+		return "", errors.New("invalid key value")
+	}
+	if decoder.More() {
+		return "", errors.New("login body contains extra or duplicate fields")
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return "", errors.New("invalid login object")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return "", errors.New("trailing JSON")
+	}
+	return key, nil
+}
+
 func (g *Gateway) logout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		g.audit(r, "logout", "cross-origin")
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	if cookie, err := r.Cookie(g.cfg.CookieName); err == nil {
@@ -231,7 +268,6 @@ func (g *Gateway) verify(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	g.audit(r, "verify", "missing")
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
@@ -286,10 +322,33 @@ func sameOrigin(r *http.Request) bool {
 		return true
 	}
 	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
-	return strings.EqualFold(u.Host, r.Host)
+	originHost, ok := canonicalHTTPSAuthority(u.Host)
+	if !ok {
+		return false
+	}
+	requestHost, ok := canonicalHTTPSAuthority(r.Host)
+	return ok && originHost == requestHost
+}
+
+func canonicalHTTPSAuthority(authority string) (string, bool) {
+	host := authority
+	port := ""
+	if parsedHost, parsedPort, err := net.SplitHostPort(authority); err == nil {
+		if parsedPort == "" {
+			return "", false
+		}
+		host, port = parsedHost, parsedPort
+	} else if strings.Contains(authority, ":") {
+		return "", false
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" || (port != "" && port != "443") {
+		return "", false
+	}
+	return host, true
 }
 
 func (g *Gateway) clientIP(r *http.Request) string {

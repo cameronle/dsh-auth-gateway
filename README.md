@@ -62,6 +62,11 @@ Validate the Caddy configuration before reload:
 caddy validate --config configs/Caddyfile.example --adapter caddyfile
 ```
 
+`configs/Caddyfile.example` is the single maintained Caddy source. Copy it to
+the production host, replace `dsh.example.com` with the public hostname, and
+validate the deployed file before reloading Caddy. Host-specific generated
+copies are intentionally not kept in the repository.
+
 Set the Caddy site label and `EXPECTED_HOST` to the one public hostname. The
 site still uses `bind 127.0.0.1`, so the socket remains loopback-only, and
 `admin off` disables Caddy's local runtime configuration API. The anonymous
@@ -84,4 +89,4 @@ bound to loopback; without this normalization, the Settings UI returns HTTP
 - Cloudflare challenges must not be applied to `/api/*` or WebSocket paths.
 - This boundary does not protect against an attacker who already controls the host.
 
-See [SECURITY.md](SECURITY.md) for the threat model and reporting guidance.
+See [SECURITY.md](SECURITY.md) for the current threat model and reporting guidance. The proposed credential-verification and rate-limit redesign is specified in [docs/auth-rate-limit-design.md](docs/auth-rate-limit-design.md); it is a design proposal, not current runtime behavior.

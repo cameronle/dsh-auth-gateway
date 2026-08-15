@@ -24,6 +24,17 @@ type Config struct {
 	ExpectedHost   string
 }
 
+const (
+	maxDuration    = 10 * 365 * 24 * time.Hour
+	maxMaxFailures = 1_000_000
+)
+
+var allowedKeys = map[string]struct{}{
+	"LISTEN": {}, "KEY_SALT": {}, "KEY_HASH": {}, "SESSION_TTL": {},
+	"COOKIE_NAME": {}, "SECURE_COOKIE": {}, "MAX_FAILURES": {},
+	"FAILURE_WINDOW": {}, "LOCKOUT": {}, "TRUSTED_PROXY_IP": {}, "EXPECTED_HOST": {},
+}
+
 func Load(path string) (Config, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -51,7 +62,14 @@ func Load(path string) (Config, error) {
 		if !ok {
 			return Config{}, errors.New("invalid config line")
 		}
-		m[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		key := strings.TrimSpace(k)
+		if _, ok := allowedKeys[key]; !ok {
+			return Config{}, errors.New("unknown config key: " + key)
+		}
+		if _, exists := m[key]; exists {
+			return Config{}, errors.New("duplicate config key: " + key)
+		}
+		m[key] = strings.TrimSpace(v)
 	}
 	if err := s.Err(); err != nil {
 		return Config{}, err
@@ -67,31 +85,34 @@ func Load(path string) (Config, error) {
 	if cfg.KeySalt == "" || cfg.KeyHash == "" {
 		return Config{}, errors.New("KEY_SALT and KEY_HASH are required")
 	}
-	if cfg.ExpectedHost == "" || strings.ContainsAny(cfg.ExpectedHost, "/\\") || strings.Contains(cfg.ExpectedHost, "://") {
+	if !validHostname(cfg.ExpectedHost) {
 		return Config{}, errors.New("EXPECTED_HOST must be a hostname without scheme or path")
 	}
 	if cfg.CookieName == "" {
 		cfg.CookieName = "dsh_gateway_session"
 	}
+	if !validCookieName(cfg.CookieName) {
+		return Config{}, errors.New("COOKIE_NAME must be a valid HTTP cookie name")
+	}
 	cfg.SessionTTL, err = duration(m["SESSION_TTL"], 12*time.Hour)
-	if err != nil {
-		return Config{}, err
+	if err != nil || cfg.SessionTTL <= 0 || cfg.SessionTTL > maxDuration {
+		return Config{}, errors.New("SESSION_TTL must be positive and at most 10 years")
 	}
 	cfg.FailureWindow, err = duration(m["FAILURE_WINDOW"], 5*time.Minute)
-	if err != nil {
-		return Config{}, err
+	if err != nil || cfg.FailureWindow <= 0 || cfg.FailureWindow > maxDuration {
+		return Config{}, errors.New("FAILURE_WINDOW must be positive and at most 10 years")
 	}
 	cfg.Lockout, err = duration(m["LOCKOUT"], 15*time.Minute)
-	if err != nil {
-		return Config{}, err
+	if err != nil || cfg.Lockout <= 0 || cfg.Lockout > maxDuration {
+		return Config{}, errors.New("LOCKOUT must be positive and at most 10 years")
 	}
 	cfg.MaxFailures, err = integer(m["MAX_FAILURES"], 5)
-	if err != nil {
-		return Config{}, err
+	if err != nil || cfg.MaxFailures > maxMaxFailures {
+		return Config{}, errors.New("MAX_FAILURES must be a positive integer at most 1000000")
 	}
 	cfg.SecureCookie, err = boolean(m["SECURE_COOKIE"], true)
 	if err != nil {
-		return Config{}, err
+		return Config{}, errors.New("SECURE_COOKIE must be true or false")
 	}
 	if cfg.TrustedProxyIP == "" {
 		cfg.TrustedProxyIP = "127.0.0.1"
@@ -102,12 +123,42 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+func validCookieName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if r <= 0x20 || r >= 0x7f || strings.ContainsRune("()<>@,;:\\\"/[]?={}", r) {
+			return false
+		}
+	}
+	return true
+}
+
+func validHostname(host string) bool {
+	if host == "" || len(host) > 253 || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") || strings.Contains(host, "..") || strings.ContainsAny(host, " /\\:@[]") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func duration(s string, d time.Duration) (time.Duration, error) {
 	if s == "" {
 		return d, nil
 	}
 	return time.ParseDuration(s)
 }
+
 func integer(s string, d int) (int, error) {
 	if s == "" {
 		return d, nil
@@ -118,6 +169,7 @@ func integer(s string, d int) (int, error) {
 	}
 	return v, nil
 }
+
 func boolean(s string, d bool) (bool, error) {
 	if s == "" {
 		return d, nil
