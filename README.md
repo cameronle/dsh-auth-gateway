@@ -89,4 +89,4 @@ bound to loopback; without this normalization, the Settings UI returns HTTP
 - Cloudflare challenges must not be applied to `/api/*` or WebSocket paths.
 - This boundary does not protect against an attacker who already controls the host.
 
-See [SECURITY.md](SECURITY.md) for the current threat model and reporting guidance. The proposed credential-verification and rate-limit redesign is specified in [docs/auth-rate-limit-design.md](docs/auth-rate-limit-design.md); it is a design proposal, not current runtime behavior.
+See [SECURITY.md](SECURITY.md) for the threat model and reporting guidance.

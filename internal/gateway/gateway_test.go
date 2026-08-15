@@ -280,7 +280,7 @@ func TestLockoutAfterFailures(t *testing.T) {
 	good.RemoteAddr = "127.0.0.1:1234"
 	rec := httptest.NewRecorder()
 	g.Handler().ServeHTTP(rec, good)
-	if rec.Code != http.StatusTooManyRequests {
+	if rec.Code != http.StatusNoContent {
 		t.Fatalf("got %d", rec.Code)
 	}
 }

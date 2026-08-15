@@ -4,7 +4,6 @@
 }
 
 http://dsh.example.com:18080 {
-	# Match exactly the public Host and keep the listener on host loopback.
 	bind 127.0.0.1
 
 	log {
@@ -16,24 +15,33 @@ http://dsh.example.com:18080 {
 	handle @auth {
 		header Cache-Control "no-store"
 		reverse_proxy 127.0.0.1:18081 {
-			# Cloudflare owns this header on public requests. Remove any value
-			# before the auth service sees it when Caddy is called another way.
+			# cloudflared owns CF-Connecting-IP on this loopback-only origin.
+			# Replace any caller-supplied internal identity with that value.
+			header_up X-DSH-Client-IP {http.request.header.CF-Connecting-IP}
 			header_up -CF-Connecting-IP
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
 		}
 	}
 
 	handle {
 		forward_auth 127.0.0.1:18081 {
 			uri /verify
+			header_up X-DSH-Client-IP {http.request.header.CF-Connecting-IP}
 			header_up -CF-Connecting-IP
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -X-Real-IP
 		}
 		header Cache-Control "no-store"
 		reverse_proxy 127.0.0.1:3080 {
-			# DSH pins settings.*, credentials.*, native host actions, and
-			# model discovery to a loopback authority. Requests reaching here
-			# have passed gateway authentication, and DSH itself is loopback-only.
 			header_up Host 127.0.0.1:3080
 			header_up Origin http://127.0.0.1:3080
+			header_up -X-DSH-Client-IP
+			header_up -CF-Connecting-IP
 		}
 	}
 }

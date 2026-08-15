@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,10 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,90 +25,166 @@ import (
 )
 
 type Config struct {
-	KeySalt        string
-	KeyHash        string
-	SessionTTL     time.Duration
-	CookieName     string
-	SecureCookie   bool
-	MaxFailures    int
-	FailureWindow  time.Duration
-	Lockout        time.Duration
-	TrustedProxyIP string
-	ExpectedHost   string
-	AuditWriter    io.Writer
+	KeySalt               string
+	KeyHash               string
+	SessionTTL            time.Duration
+	CookieName            string
+	SecureCookie          bool
+	ExpectedHost          string
+	TrustedProxyIP        string
+	ClientIPHeader        string
+	RequireClientIdentity bool
+	FailureBurst          int
+	FailureRefill         time.Duration
+	GlobalBurst           int
+	GlobalRefill          time.Duration
+	StateTTL              time.Duration
+	StateMaxClients       int
+	CleanupInterval       time.Duration
+	SessionMax            int
+	KeyCheckConcurrency   int
+	KeyCheckBurst         int
+	KeyCheckRefill        time.Duration
+	// Deprecated source-compatibility fields; runtime uses token buckets.
+	MaxFailures   int
+	FailureWindow time.Duration
+	Lockout       time.Duration
+	AuditWriter   io.Writer
 }
 
-type session struct {
-	expires time.Time
+type session struct{ expires time.Time }
+type bucket struct {
+	tokens                       float64
+	updated, lastSeen, lastAudit time.Time
+	suppressed                   uint64
 }
+type credentialMode uint8
 
-type failureState struct {
-	attempts []time.Time
-	blocked  time.Time
-}
+const (
+	credentialSHA256 credentialMode = iota + 1
+	credentialLegacyScrypt
+)
 
 type Gateway struct {
-	cfg      Config
-	salt     []byte
-	hash     []byte
-	now      func() time.Time
-	mu       sync.Mutex
-	sessions map[[sha256.Size]byte]session
-	failures map[string]failureState
+	cfg          Config
+	mode         credentialMode
+	salt, hash   []byte
+	now          func() time.Time
+	mu           sync.Mutex
+	sessions     map[[sha256.Size]byte]session
+	clients      map[string]*bucket
+	overflow     bucket
+	global       bucket
+	legacyBucket bucket
+	legacySem    chan struct{}
+	cachedValid  [sha256.Size]byte
+	cached       bool
+	stop         chan struct{}
+	done         chan struct{}
+	closeOnce    sync.Once
 }
 
 func New(cfg Config) (*Gateway, error) {
-	if cfg.CookieName == "" {
-		cfg.CookieName = "dsh_gateway_session"
+	defaults(&cfg)
+	g := &Gateway{cfg: cfg, now: time.Now, sessions: make(map[[sha256.Size]byte]session), clients: make(map[string]*bucket), legacySem: make(chan struct{}, cfg.KeyCheckConcurrency), stop: make(chan struct{}), done: make(chan struct{})}
+	if strings.HasPrefix(cfg.KeyHash, "sha256:") {
+		d, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(cfg.KeyHash, "sha256:"))
+		if err != nil || len(d) != sha256.Size {
+			return nil, errors.New("invalid sha256 key hash")
+		}
+		g.mode, g.hash = credentialSHA256, d
+	} else {
+		hashText, saltText := cfg.KeyHash, cfg.KeySalt
+		if strings.HasPrefix(hashText, "scrypt:") {
+			parts := strings.Split(hashText, ":")
+			if len(parts) != 3 {
+				return nil, errors.New("invalid scrypt key hash")
+			}
+			saltText, hashText = parts[1], parts[2]
+		} else if strings.Contains(hashText, ":") {
+			return nil, errors.New("unknown key hash format")
+		}
+		salt, e1 := base64.RawURLEncoding.DecodeString(saltText)
+		hash, e2 := base64.RawURLEncoding.DecodeString(hashText)
+		if e1 != nil || len(salt) < 16 || e2 != nil || len(hash) != sha256.Size {
+			return nil, errors.New("invalid legacy scrypt key material")
+		}
+		g.mode, g.salt, g.hash = credentialLegacyScrypt, salt, hash
 	}
-	if cfg.SessionTTL <= 0 {
-		cfg.SessionTTL = 12 * time.Hour
-	}
-	if cfg.MaxFailures <= 0 {
-		cfg.MaxFailures = 5
-	}
-	if cfg.FailureWindow <= 0 {
-		cfg.FailureWindow = 5 * time.Minute
-	}
-	if cfg.Lockout <= 0 {
-		cfg.Lockout = 15 * time.Minute
-	}
-	salt, err := base64.RawURLEncoding.DecodeString(cfg.KeySalt)
-	if err != nil || len(salt) < 16 {
-		return nil, errors.New("invalid key salt")
-	}
-	hash, err := base64.RawURLEncoding.DecodeString(cfg.KeyHash)
-	if err != nil || len(hash) != sha256.Size {
-		return nil, errors.New("invalid key hash")
-	}
-	return &Gateway{cfg: cfg, salt: salt, hash: hash, now: time.Now, sessions: make(map[[sha256.Size]byte]session), failures: make(map[string]failureState)}, nil
+	now := g.now()
+	g.global = bucket{tokens: float64(cfg.GlobalBurst), updated: now, lastSeen: now}
+	g.overflow = bucket{tokens: float64(cfg.FailureBurst), updated: now, lastSeen: now}
+	g.legacyBucket = bucket{tokens: float64(cfg.KeyCheckBurst), updated: now, lastSeen: now}
+	go g.cleanupLoop()
+	return g, nil
 }
 
-// deriveKey uses scrypt with parameters selected for an interactive
-// management-key check. The stored value is salted and compared in constant
-// time; the plaintext key is never persisted by this package.
+func defaults(c *Config) {
+	if c.CookieName == "" {
+		c.CookieName = "dsh_gateway_session"
+	}
+	if c.SessionTTL <= 0 {
+		c.SessionTTL = 12 * time.Hour
+	}
+	if c.ClientIPHeader == "" {
+		c.ClientIPHeader = "X-DSH-Client-IP"
+	}
+	if c.TrustedProxyIP == "" {
+		c.TrustedProxyIP = "127.0.0.1"
+	}
+	if c.FailureBurst <= 0 {
+		c.FailureBurst = 5
+	}
+	if c.FailureRefill <= 0 {
+		c.FailureRefill = 30 * time.Second
+	}
+	if c.GlobalBurst <= 0 {
+		c.GlobalBurst = 100
+	}
+	if c.GlobalRefill <= 0 {
+		c.GlobalRefill = 200 * time.Millisecond
+	}
+	if c.StateTTL <= 0 {
+		c.StateTTL = time.Hour
+	}
+	if c.StateMaxClients <= 0 {
+		c.StateMaxClients = 10000
+	}
+	if c.CleanupInterval <= 0 {
+		c.CleanupInterval = time.Minute
+	}
+	if c.SessionMax <= 0 {
+		c.SessionMax = 10000
+	}
+	if c.KeyCheckConcurrency <= 0 {
+		c.KeyCheckConcurrency = 2
+	}
+	if c.KeyCheckBurst <= 0 {
+		c.KeyCheckBurst = 4
+	}
+	if c.KeyCheckRefill <= 0 {
+		c.KeyCheckRefill = 2 * time.Second
+	}
+}
+
 func deriveKey(key, salt []byte) []byte {
-	derived, err := scrypt.Key(key, salt, 1<<15, 8, 1, sha256.Size)
+	d, err := scrypt.Key(key, salt, 1<<15, 8, 1, sha256.Size)
 	if err != nil {
-		panic("scrypt parameters are invalid: " + err.Error())
+		panic(err)
 	}
-	return derived
+	return d
 }
-
-func GenerateKeyHash() (plain, saltEncoded, hashEncoded string, err error) {
+func GenerateKeyHash() (plain, hash string, err error) {
 	key := make([]byte, 64)
-	salt := make([]byte, 16)
 	if _, err = rand.Read(key); err != nil {
 		return
 	}
-	if _, err = rand.Read(salt); err != nil {
-		return
-	}
 	plain = base64.RawURLEncoding.EncodeToString(key)
-	saltEncoded = base64.RawURLEncoding.EncodeToString(salt)
-	hashEncoded = base64.RawURLEncoding.EncodeToString(deriveKey([]byte(plain), salt))
+	d := sha256.Sum256([]byte(plain))
+	hash = "sha256:" + base64.RawURLEncoding.EncodeToString(d[:])
 	return
 }
+func (g *Gateway) Close() error { g.closeOnce.Do(func() { close(g.stop); <-g.done }); return nil }
 
 func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -115,32 +195,26 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/verify", g.verify)
 	return g.securityHeaders(g.requireExpectedHost(mux))
 }
-
 func (g *Gateway) requireExpectedHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if g.cfg.ExpectedHost != "" {
-			host := strings.ToLower(r.Host)
-			if parsedHost, port, err := net.SplitHostPort(host); err == nil && port == "443" {
-				host = parsedHost
-			}
-			if host != strings.ToLower(g.cfg.ExpectedHost) {
-				http.Error(w, "forbidden", http.StatusForbidden)
+			h, ok := canonicalHTTPSAuthority(r.Host)
+			if !ok || h != strings.ToLower(g.cfg.ExpectedHost) {
+				http.Error(w, "forbidden", 403)
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
 }
-
 func (g *Gateway) health(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(200)
 	_, _ = io.WriteString(w, "ok\n")
 }
-
 func (g *Gateway) loginPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "method not allowed", 405)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -150,256 +224,453 @@ func (g *Gateway) loginPage(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "method not allowed", 405)
 		return
 	}
 	if !sameOrigin(r) {
-		g.audit(r, "login", "cross-origin")
-		http.Error(w, "forbidden", http.StatusForbidden)
+		g.audit(r, "login", "cross-origin", "", "")
+		http.Error(w, "forbidden", 403)
 		return
 	}
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || !strings.EqualFold(mediaType, "application/json") {
-		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
-		return
-	}
-	ip := g.clientIP(r)
-	if g.blocked(ip) {
-		g.audit(r, "login", "blocked")
-		http.Error(w, "too many attempts", http.StatusTooManyRequests)
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mt, "application/json") {
+		http.Error(w, "unsupported media type", 415)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	defer r.Body.Close()
 	key, err := decodeLoginKey(r.Body)
 	if err != nil {
-		g.audit(r, "login", "malformed")
-		http.Error(w, "bad request", http.StatusBadRequest)
+		g.audit(r, "login", "malformed", "", "")
+		http.Error(w, "bad request", 400)
 		return
 	}
-	if !g.validKey(key) {
-		g.recordFailure(ip)
-		g.audit(r, "login", "invalid")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	identity, err := g.clientIdentity(r)
+	if err != nil {
+		g.audit(r, "login", "unavailable", "client-identity-unavailable", "")
+		serviceUnavailable(w)
 		return
 	}
-	g.clearFailures(ip)
+	valid, wait := g.verifyKey(key)
+	if wait > 0 {
+		rateLimited(w, wait)
+		g.audit(r, "login", "rate-limited", "verifier-capacity", identity)
+		return
+	}
+	if !valid {
+		ok, retry, reason := g.chargeFailure(identity)
+		if !ok {
+			rateLimited(w, retry)
+			g.auditRateLimited(r, identity, reason)
+			return
+		}
+		g.audit(r, "login", "invalid", "", identity)
+		unauthorized(w)
+		return
+	}
+	g.resetClient(identity)
 	token, err := randomToken()
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		http.Error(w, "internal error", 500)
 		return
 	}
+	now := g.now()
 	g.mu.Lock()
-	g.sessions[sha256.Sum256([]byte(token))] = session{expires: g.now().Add(g.cfg.SessionTTL)}
+	g.cleanupLocked(now)
+	if len(g.sessions) >= g.cfg.SessionMax {
+		g.mu.Unlock()
+		g.audit(r, "login", "unavailable", "session-capacity", identity)
+		serviceUnavailable(w)
+		return
+	}
+	g.sessions[sha256.Sum256([]byte(token))] = session{expires: now.Add(g.cfg.SessionTTL)}
 	g.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: g.cfg.CookieName, Value: token, Path: "/", MaxAge: int(g.cfg.SessionTTL.Seconds()), HttpOnly: true, Secure: g.cfg.SecureCookie, SameSite: http.SameSiteStrictMode})
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusNoContent)
-	g.audit(r, "login", "success")
+	w.WriteHeader(204)
+	g.audit(r, "login", "success", "", identity)
 }
 
-func decodeLoginKey(r io.Reader) (string, error) {
-	decoder := json.NewDecoder(r)
-	token, err := decoder.Token()
-	if err != nil || token != json.Delim('{') {
-		return "", errors.New("login body must be an object")
+func (g *Gateway) verify(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(g.cfg.CookieName); err == nil && g.validSession(c.Value) {
+		w.WriteHeader(204)
+		return
 	}
-	if !decoder.More() {
-		return "", errors.New("login body is missing key")
+	key, ok := bearer(r.Header.Values("Authorization"))
+	if !ok {
+		unauthorized(w)
+		return
 	}
-	name, err := decoder.Token()
-	if err != nil || name != "key" {
-		return "", errors.New("login body must contain only lowercase key")
+	identity, err := g.clientIdentity(r)
+	if err != nil {
+		serviceUnavailable(w)
+		g.audit(r, "verify", "unavailable", "client-identity-unavailable", "")
+		return
 	}
-	var key string
-	if err := decoder.Decode(&key); err != nil || key == "" || len(key) > 512 {
-		return "", errors.New("invalid key value")
+	valid, wait := g.verifyKey(key)
+	if wait > 0 {
+		rateLimited(w, wait)
+		g.audit(r, "verify", "rate-limited", "verifier-capacity", identity)
+		return
 	}
-	if decoder.More() {
-		return "", errors.New("login body contains extra or duplicate fields")
+	if valid {
+		g.resetClient(identity)
+		w.WriteHeader(204)
+		return
 	}
-	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
-		return "", errors.New("invalid login object")
+	admit, retry, reason := g.chargeFailure(identity)
+	if !admit {
+		rateLimited(w, retry)
+		g.auditRateLimited(r, identity, reason)
+		return
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return "", errors.New("trailing JSON")
-	}
-	return key, nil
+	g.audit(r, "verify", "invalid-bearer", "", identity)
+	unauthorized(w)
 }
 
 func (g *Gateway) logout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "method not allowed", 405)
 		return
 	}
 	if !sameOrigin(r) {
-		g.audit(r, "logout", "cross-origin")
-		http.Error(w, "forbidden", http.StatusForbidden)
+		g.audit(r, "logout", "cross-origin", "", "")
+		http.Error(w, "forbidden", 403)
 		return
 	}
-	if cookie, err := r.Cookie(g.cfg.CookieName); err == nil {
+	if c, e := r.Cookie(g.cfg.CookieName); e == nil {
 		g.mu.Lock()
-		delete(g.sessions, sha256.Sum256([]byte(cookie.Value)))
+		delete(g.sessions, sha256.Sum256([]byte(c.Value)))
 		g.mu.Unlock()
 	}
 	http.SetCookie(w, &http.Cookie{Name: g.cfg.CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: g.cfg.SecureCookie, SameSite: http.SameSiteStrictMode})
-	w.WriteHeader(http.StatusNoContent)
-	g.audit(r, "logout", "success")
+	w.WriteHeader(204)
+	g.audit(r, "logout", "success", "", "")
 }
 
-func (g *Gateway) verify(w http.ResponseWriter, r *http.Request) {
-	ip := g.clientIP(r)
-	if g.blocked(ip) {
-		http.Error(w, "too many attempts", http.StatusTooManyRequests)
-		return
+func (g *Gateway) verifyKey(key string) (bool, time.Duration) {
+	if len(key) == 0 || len(key) > 512 {
+		return false, 0
 	}
-	if key, ok := bearer(r.Header.Values("Authorization")); ok {
-		if g.validKey(key) {
-			g.clearFailures(ip)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		g.recordFailure(ip)
-		g.audit(r, "verify", "invalid-bearer")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+	d := sha256.Sum256([]byte(key))
+	if g.mode == credentialSHA256 {
+		return hmac.Equal(d[:], g.hash), 0
 	}
-	if cookie, err := r.Cookie(g.cfg.CookieName); err == nil && g.validSession(cookie.Value) {
-		w.WriteHeader(http.StatusNoContent)
-		return
+	g.mu.Lock()
+	if g.cached {
+		ok := hmac.Equal(d[:], g.cachedValid[:])
+		g.mu.Unlock()
+		return ok, 0
 	}
-	http.Error(w, "unauthorized", http.StatusUnauthorized)
-}
-
-func bearer(values []string) (string, bool) {
-	if len(values) != 1 {
-		return "", false
+	now := g.now()
+	wait := bucketWait(&g.legacyBucket, now, g.cfg.KeyCheckBurst, g.cfg.KeyCheckRefill)
+	if wait > 0 {
+		g.mu.Unlock()
+		return false, wait
 	}
-	parts := strings.Fields(values[0])
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
-		return "", false
+	g.legacyBucket.tokens--
+	g.mu.Unlock()
+	select {
+	case g.legacySem <- struct{}{}:
+		defer func() { <-g.legacySem }()
+	default:
+		return false, time.Second
 	}
-	return parts[1], true
+	ok := hmac.Equal(deriveKey([]byte(key), g.salt), g.hash)
+	if ok {
+		g.mu.Lock()
+		g.cachedValid = d
+		g.cached = true
+		g.mu.Unlock()
+	}
+	return ok, 0
 }
 
 func (g *Gateway) validKey(key string) bool {
-	if len(key) == 0 || len(key) > 512 {
-		return false
+	ok, _ := g.verifyKey(key)
+	return ok
+}
+
+func (g *Gateway) clientIdentity(r *http.Request) (string, error) {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		peer = r.RemoteAddr
 	}
-	got := deriveKey([]byte(key), g.salt)
-	return hmac.Equal(got, g.hash)
+	p, err := netip.ParseAddr(peer)
+	if err != nil {
+		return "", err
+	}
+	trusted := p.Unmap().String() == g.cfg.TrustedProxyIP
+	if !trusted {
+		return normalizeIdentity(p), nil
+	}
+	vals := r.Header.Values(g.cfg.ClientIPHeader)
+	if len(vals) != 1 || strings.Contains(vals[0], ",") {
+		if g.cfg.RequireClientIdentity {
+			return "", errors.New("missing client identity")
+		}
+		return normalizeIdentity(p), nil
+	}
+	ip, err := netip.ParseAddr(strings.TrimSpace(vals[0]))
+	if err != nil {
+		return "", err
+	}
+	return normalizeIdentity(ip), nil
+}
+
+func (g *Gateway) clientIP(r *http.Request) string {
+	id, _ := g.clientIdentity(r)
+	return id
+}
+
+func (g *Gateway) blocked(id string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	b := g.clients[id]
+	return b != nil && bucketWait(b, g.now(), g.cfg.FailureBurst, g.cfg.FailureRefill) > 0
+}
+func normalizeIdentity(ip netip.Addr) string {
+	ip = ip.Unmap()
+	if ip.Is4() {
+		return ip.String()
+	}
+	return netip.PrefixFrom(ip, 64).Masked().String()
+}
+
+func (g *Gateway) chargeFailure(id string) (bool, time.Duration, string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.now()
+	g.cleanupLocked(now)
+	b, reason := g.clientBucketLocked(id, now)
+	cw := bucketWait(b, now, g.cfg.FailureBurst, g.cfg.FailureRefill)
+	gw := bucketWait(&g.global, now, g.cfg.GlobalBurst, g.cfg.GlobalRefill)
+	if cw > 0 || gw > 0 {
+		if gw > cw {
+			return false, ceilDuration(gw), "global-budget"
+		}
+		return false, ceilDuration(cw), reason
+	}
+	b.tokens--
+	b.lastSeen = now
+	g.global.tokens--
+	g.global.lastSeen = now
+	return true, 0, ""
+}
+func (g *Gateway) clientBucketLocked(id string, now time.Time) (*bucket, string) {
+	if b := g.clients[id]; b != nil {
+		return b, "client-budget"
+	}
+	if len(g.clients) < g.cfg.StateMaxClients {
+		b := &bucket{tokens: float64(g.cfg.FailureBurst), updated: now, lastSeen: now}
+		g.clients[id] = b
+		return b, "client-budget"
+	}
+	return &g.overflow, "overflow-budget"
+}
+func bucketWait(b *bucket, now time.Time, cap int, refill time.Duration) time.Duration {
+	if b.updated.IsZero() {
+		b.updated = now
+		b.tokens = float64(cap)
+	}
+	if now.After(b.updated) {
+		b.tokens = math.Min(float64(cap), b.tokens+float64(now.Sub(b.updated))/float64(refill))
+		b.updated = now
+	}
+	if b.tokens >= 1 {
+		return 0
+	}
+	return time.Duration(math.Ceil((1 - b.tokens) * float64(refill)))
+}
+func (g *Gateway) resetClient(id string) {
+	g.mu.Lock()
+	if b := g.clients[id]; b != nil {
+		b.tokens = float64(g.cfg.FailureBurst)
+		b.updated = g.now()
+		b.lastSeen = g.now()
+	}
+	g.mu.Unlock()
 }
 
 func (g *Gateway) validSession(token string) bool {
 	if token == "" || len(token) > 512 {
 		return false
 	}
-	key := sha256.Sum256([]byte(token))
+	k := sha256.Sum256([]byte(token))
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	s, ok := g.sessions[key]
+	s, ok := g.sessions[k]
 	if !ok {
 		return false
 	}
 	if !g.now().Before(s.expires) {
-		delete(g.sessions, key)
+		delete(g.sessions, k)
 		return false
 	}
 	return true
 }
-
-func randomToken() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-func sameOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return true
-	}
-	u, err := url.Parse(origin)
-	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return false
-	}
-	originHost, ok := canonicalHTTPSAuthority(u.Host)
-	if !ok {
-		return false
-	}
-	requestHost, ok := canonicalHTTPSAuthority(r.Host)
-	return ok && originHost == requestHost
-}
-
-func canonicalHTTPSAuthority(authority string) (string, bool) {
-	host := authority
-	port := ""
-	if parsedHost, parsedPort, err := net.SplitHostPort(authority); err == nil {
-		if parsedPort == "" {
-			return "", false
+func (g *Gateway) cleanupLoop() {
+	t := time.NewTicker(g.cfg.CleanupInterval)
+	defer func() { t.Stop(); close(g.done) }()
+	for {
+		select {
+		case now := <-t.C:
+			g.mu.Lock()
+			g.cleanupLocked(now)
+			g.mu.Unlock()
+		case <-g.stop:
+			return
 		}
-		host, port = parsedHost, parsedPort
-	} else if strings.Contains(authority, ":") {
-		return "", false
 	}
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	if host == "" || (port != "" && port != "443") {
-		return "", false
+}
+func (g *Gateway) cleanupLocked(now time.Time) {
+	for k, s := range g.sessions {
+		if !now.Before(s.expires) {
+			delete(g.sessions, k)
+		}
 	}
-	return host, true
+	for id, b := range g.clients {
+		bucketWait(b, now, g.cfg.FailureBurst, g.cfg.FailureRefill)
+		if b.tokens >= float64(g.cfg.FailureBurst) && now.Sub(b.lastSeen) >= g.cfg.StateTTL {
+			delete(g.clients, id)
+		}
+	}
 }
 
-func (g *Gateway) clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.String()
-	}
-	return host
-}
-
-func (g *Gateway) blocked(ip string) bool {
+func (g *Gateway) auditRateLimited(r *http.Request, id, reason string) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	s := g.failures[ip]
-	return g.now().Before(s.blocked)
-}
-
-func (g *Gateway) recordFailure(ip string) {
 	now := g.now()
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	s := g.failures[ip]
-	cutoff := now.Add(-g.cfg.FailureWindow)
-	kept := s.attempts[:0]
-	for _, at := range s.attempts {
-		if at.After(cutoff) {
-			kept = append(kept, at)
-		}
+	b, _ := g.clientBucketLocked(id, now)
+	if now.Sub(b.lastAudit) >= time.Minute {
+		supp := b.suppressed
+		b.suppressed = 0
+		b.lastAudit = now
+		g.mu.Unlock()
+		g.audit(r, "auth", "rate-limited", reason, id, fmt.Sprint(supp))
+		return
 	}
-	s.attempts = append(kept, now)
-	if len(s.attempts) >= g.cfg.MaxFailures {
-		s.blocked = now.Add(g.cfg.Lockout)
-		s.attempts = nil
-	}
-	g.failures[ip] = s
+	b.suppressed++
+	g.mu.Unlock()
 }
-
-func (g *Gateway) clearFailures(ip string) { g.mu.Lock(); delete(g.failures, ip); g.mu.Unlock() }
-
-func (g *Gateway) audit(r *http.Request, event, result string) {
+func (g *Gateway) audit(r *http.Request, event, result, reason, client string, extra ...string) {
 	if g.cfg.AuditWriter == nil {
 		return
 	}
-	entry := map[string]string{"time": g.now().UTC().Format(time.RFC3339), "event": event, "result": result, "ip": g.clientIP(r), "method": r.Method}
-	b, _ := json.Marshal(entry)
+	m := map[string]string{"time": g.now().UTC().Format(time.RFC3339), "event": event, "result": result, "method": r.Method}
+	if client != "" {
+		m["client"] = client
+	}
+	if reason != "" {
+		m["reason"] = reason
+	}
+	if len(extra) > 0 && extra[0] != "0" {
+		m["suppressed"] = extra[0]
+	}
+	b, _ := json.Marshal(m)
 	_, _ = fmt.Fprintln(g.cfg.AuditWriter, string(b))
 }
 
+func bearer(v []string) (string, bool) {
+	if len(v) != 1 {
+		return "", false
+	}
+	p := strings.Fields(v[0])
+	returnValue := len(p) == 2 && strings.EqualFold(p[0], "Bearer") && p[1] != ""
+	if !returnValue {
+		return "", false
+	}
+	return p[1], true
+}
+func randomToken() (string, error) {
+	b := make([]byte, 32)
+	if _, e := rand.Read(b); e != nil {
+		return "", e
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "unauthorized", 401)
+}
+func rateLimited(w http.ResponseWriter, d time.Duration) {
+	seconds := int(math.Ceil(d.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	http.Error(w, "too many attempts", 429)
+}
+func serviceUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "service unavailable", 503)
+}
+func ceilDuration(d time.Duration) time.Duration {
+	if d <= 0 {
+		return time.Second
+	}
+	return time.Duration(math.Ceil(d.Seconds())) * time.Second
+}
+func sameOrigin(r *http.Request) bool {
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return true
+	}
+	u, e := url.Parse(o)
+	if e != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	a, ok := canonicalHTTPSAuthority(u.Host)
+	if !ok {
+		return false
+	}
+	b, ok := canonicalHTTPSAuthority(r.Host)
+	return ok && a == b
+}
+func canonicalHTTPSAuthority(a string) (string, bool) {
+	h, p := a, ""
+	if ph, pp, e := net.SplitHostPort(a); e == nil {
+		if pp == "" {
+			return "", false
+		}
+		h, p = ph, pp
+	} else if strings.Contains(a, ":") {
+		return "", false
+	}
+	h = strings.TrimSuffix(strings.ToLower(h), ".")
+	if h == "" || (p != "" && p != "443") {
+		return "", false
+	}
+	return h, true
+}
+func decodeLoginKey(r io.Reader) (string, error) {
+	d := json.NewDecoder(r)
+	t, e := d.Token()
+	if e != nil || t != json.Delim('{') {
+		return "", errors.New("object required")
+	}
+	if !d.More() {
+		return "", errors.New("key missing")
+	}
+	n, e := d.Token()
+	if e != nil || n != "key" {
+		return "", errors.New("only key allowed")
+	}
+	var k string
+	if e = d.Decode(&k); e != nil || k == "" || len(k) > 512 {
+		return "", errors.New("invalid key")
+	}
+	if d.More() {
+		return "", errors.New("extra field")
+	}
+	if t, e = d.Token(); e != nil || t != json.Delim('}') {
+		return "", errors.New("invalid object")
+	}
+	if e = d.Decode(&struct{}{}); e != io.EOF {
+		return "", errors.New("trailing json")
+	}
+	return k, nil
+}
 func (g *Gateway) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -409,49 +680,6 @@ func (g *Gateway) securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-const loginHTML = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="robots" content="noindex,nofollow">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
-<title>Sign in · DeepSeek Harness</title>
-<style>
-:root{color-scheme:light dark;--bg:#fafafa;--surface:#fff;--text:#171717;--muted:#666;--line:rgba(0,0,0,.12);--field:#fff;--button:#171717;--button-text:#fff;--focus:#0072f5;--error:#d93025}
-@media(prefers-color-scheme:dark){:root{--bg:#0a0a0a;--surface:#111;--text:#ededed;--muted:#8f8f8f;--line:rgba(255,255,255,.14);--field:#111;--button:#ededed;--button-text:#171717;--focus:#52a8ff;--error:#ff7b72}}
-*{box-sizing:border-box}
-html,body{min-height:100%}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-.page{min-height:100svh;display:grid;place-items:center;padding:max(24px,env(safe-area-inset-top)) max(20px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left))}
-.panel{width:min(100%,360px)}
-.mark{width:28px;height:28px;margin-bottom:28px;color:var(--text)}
-h1{margin:0;font-size:28px;line-height:1.15;letter-spacing:-.9px;font-weight:600}
-.intro{margin:10px 0 28px;color:var(--muted)}
-label{display:block;margin-bottom:8px;font-size:13px;font-weight:500}
-input,button{display:block;width:100%;height:48px;border:0;border-radius:8px;font:inherit}
-input{padding:0 14px;background:var(--field);color:var(--text);box-shadow:0 0 0 1px var(--line);outline:none}
-input::placeholder{color:var(--muted)}
-input:focus-visible{box-shadow:0 0 0 2px var(--focus)}
-button{margin-top:14px;background:var(--button);color:var(--button-text);font-weight:550;cursor:pointer;transition:opacity .15s ease,transform .05s ease}
-button:hover{opacity:.88}
-button:active{transform:translateY(1px)}
-button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
-button:disabled{cursor:wait;opacity:.55}
-#msg{min-height:21px;margin:12px 0 0;color:var(--error);font-size:13px}
-@media(max-height:520px){.page{place-items:start center}.panel{padding-top:20px}.mark{margin-bottom:20px}.intro{margin-bottom:20px}}
-</style>
-</head>
-<body>
-<main class="page"><section class="panel" aria-labelledby="title">
-<svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 3.3 7v10L12 22l8.7-5V7L12 2Zm0 2.3 6.7 3.8v7.8L12 19.7l-6.7-3.8V8.1L12 4.3Z"/></svg>
-<h1 id="title">DeepSeek Harness</h1>
-<p class="intro">Enter your management key to continue.</p>
-<form id="f"><label for="k">Management key</label><input id="k" name="key" type="password" autocomplete="current-password" placeholder="Enter your key" spellcheck="false" autocapitalize="none" required><button id="submit" type="submit">Sign in</button></form>
-<p id="msg" role="alert" aria-live="polite"></p>
-</section></main>
-<script>f.onsubmit=async(e)=>{e.preventDefault();msg.textContent='';submit.disabled=true;submit.textContent='Signing in…';try{let r=await fetch('/__dsh_auth/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k.value})});k.value='';if(r.ok)location.href='/';else msg.textContent=r.status===429?'Too many attempts. Try again later.':'Invalid management key.'}catch(_){msg.textContent='Unable to sign in. Try again.'}finally{submit.disabled=false;submit.textContent='Sign in'}}</script>
-</body>
-</html>`
+var _ = context.Canceled
+
+const loginHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex,nofollow"><meta name="color-scheme" content="light dark"><meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)"><title>Sign in · DeepSeek Harness</title><style>:root{color-scheme:light dark;--bg:#fafafa;--text:#171717;--muted:#666;--line:rgba(0,0,0,.12);--field:#fff;--button:#171717;--button-text:#fff;--focus:#0072f5;--error:#d93025}@media(prefers-color-scheme:dark){:root{--bg:#0a0a0a;--text:#ededed;--muted:#8f8f8f;--line:rgba(255,255,255,.14);--field:#111;--button:#ededed;--button-text:#171717;--focus:#52a8ff;--error:#ff7b72}}*{box-sizing:border-box}html,body{min-height:100%}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}.page{min-height:100svh;display:grid;place-items:center;padding:24px 20px}.panel{width:min(100%,360px)}.mark{width:28px;height:28px;margin-bottom:28px}h1{margin:0;font-size:28px;line-height:1.15;letter-spacing:-.9px;font-weight:600}.intro{margin:10px 0 28px;color:var(--muted)}label{display:block;margin-bottom:8px;font-size:13px;font-weight:500}input,button{display:block;width:100%;height:48px;border:0;border-radius:8px;font:inherit}input{padding:0 14px;background:var(--field);color:var(--text);box-shadow:0 0 0 1px var(--line);outline:none}input:focus-visible{box-shadow:0 0 0 2px var(--focus)}button{margin-top:14px;background:var(--button);color:var(--button-text);font-weight:550;cursor:pointer}#msg{min-height:21px;margin:12px 0 0;color:var(--error);font-size:13px}</style></head><body><main class="page"><section class="panel"><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2 3.3 7v10L12 22l8.7-5V7L12 2Zm0 2.3 6.7 3.8v7.8L12 19.7l-6.7-3.8V8.1L12 4.3Z"/></svg><h1>DeepSeek Harness</h1><p class="intro">Enter your management key to continue.</p><form id="f"><label for="k">Management key</label><input id="k" type="password" autocomplete="current-password" required><button id="submit">Sign in</button></form><p id="msg" role="alert" aria-live="polite"></p></section></main><script>f.onsubmit=async(e)=>{e.preventDefault();submit.disabled=true;submit.textContent='Signing in…';try{let r=await fetch('/__dsh_auth/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:k.value})});k.value='';if(r.ok)location.href='/';else msg.textContent=r.status===429?'Too many attempts. Try again later.':'Invalid management key.'}finally{submit.disabled=false;submit.textContent='Sign in'}}</script></body></html>`
