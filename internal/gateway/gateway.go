@@ -30,6 +30,8 @@ type Config struct {
 	SessionTTL            time.Duration
 	CookieName            string
 	SecureCookie          bool
+	PublicScheme          string
+	HostPolicy            string
 	ExpectedHost          string
 	TrustedProxyIP        string
 	ClientIPHeader        string
@@ -86,6 +88,22 @@ type Gateway struct {
 
 func New(cfg Config) (*Gateway, error) {
 	defaults(&cfg)
+	if cfg.PublicScheme != "http" && cfg.PublicScheme != "https" {
+		return nil, errors.New("public scheme must be http or https")
+	}
+	if cfg.HostPolicy != "request" && cfg.HostPolicy != "fixed" {
+		return nil, errors.New("host policy must be request or fixed")
+	}
+	if cfg.SecureCookie != (cfg.PublicScheme == "https") {
+		return nil, errors.New("secure cookie must match public scheme")
+	}
+	if cfg.HostPolicy == "fixed" {
+		if _, ok := canonicalAuthority(cfg.PublicScheme, cfg.ExpectedHost); !ok {
+			return nil, errors.New("fixed host policy requires a valid expected host")
+		}
+	} else if cfg.ExpectedHost != "" {
+		return nil, errors.New("expected host is only valid with fixed host policy")
+	}
 	g := &Gateway{cfg: cfg, now: time.Now, sessions: make(map[[sha256.Size]byte]session), clients: make(map[string]*bucket), legacySem: make(chan struct{}, cfg.KeyCheckConcurrency), stop: make(chan struct{}), done: make(chan struct{})}
 	if strings.HasPrefix(cfg.KeyHash, "sha256:") {
 		d, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(cfg.KeyHash, "sha256:"))
@@ -125,6 +143,16 @@ func defaults(c *Config) {
 	}
 	if c.SessionTTL <= 0 {
 		c.SessionTTL = 12 * time.Hour
+	}
+	if c.PublicScheme == "" {
+		c.PublicScheme = "https"
+	}
+	if c.HostPolicy == "" {
+		if c.ExpectedHost != "" {
+			c.HostPolicy = "fixed"
+		} else {
+			c.HostPolicy = "request"
+		}
 	}
 	if c.ClientIPHeader == "" {
 		c.ClientIPHeader = "X-DSH-Client-IP"
@@ -193,16 +221,14 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/__dsh_auth/session", g.login)
 	mux.HandleFunc("/__dsh_auth/logout", g.logout)
 	mux.HandleFunc("/verify", g.verify)
-	return g.securityHeaders(g.requireExpectedHost(mux))
+	return g.securityHeaders(g.requireValidHost(mux))
 }
-func (g *Gateway) requireExpectedHost(next http.Handler) http.Handler {
+func (g *Gateway) requireValidHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if g.cfg.ExpectedHost != "" {
-			h, ok := canonicalHTTPSAuthority(r.Host)
-			if !ok || h != strings.ToLower(g.cfg.ExpectedHost) {
-				http.Error(w, "forbidden", 403)
-				return
-			}
+		h, ok := canonicalAuthority(g.cfg.PublicScheme, r.Host)
+		if !ok || (g.cfg.HostPolicy == "fixed" && h != expectedAuthority(g.cfg.PublicScheme, g.cfg.ExpectedHost)) {
+			http.Error(w, "forbidden", 403)
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -227,7 +253,7 @@ func (g *Gateway) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if !sameOrigin(r) {
+	if !g.sameOrigin(r) {
 		g.audit(r, "login", "cross-origin", "", "")
 		http.Error(w, "forbidden", 403)
 		return
@@ -333,7 +359,7 @@ func (g *Gateway) logout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if !sameOrigin(r) {
+	if !g.sameOrigin(r) {
 		g.audit(r, "logout", "cross-origin", "", "")
 		http.Error(w, "forbidden", 403)
 		return
@@ -611,37 +637,78 @@ func ceilDuration(d time.Duration) time.Duration {
 	}
 	return time.Duration(math.Ceil(d.Seconds())) * time.Second
 }
-func sameOrigin(r *http.Request) bool {
-	o := r.Header.Get("Origin")
-	if o == "" {
+func (g *Gateway) sameOrigin(r *http.Request) bool {
+	origins := r.Header.Values("Origin")
+	if len(origins) == 0 {
 		return true
 	}
-	u, e := url.Parse(o)
-	if e != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+	if len(origins) != 1 || strings.Contains(origins[0], ",") {
 		return false
 	}
-	a, ok := canonicalHTTPSAuthority(u.Host)
+	o := origins[0]
+	u, err := url.Parse(o)
+	if err != nil || !strings.EqualFold(u.Scheme, g.cfg.PublicScheme) || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	originAuthority, ok := canonicalAuthority(g.cfg.PublicScheme, u.Host)
 	if !ok {
 		return false
 	}
-	b, ok := canonicalHTTPSAuthority(r.Host)
-	return ok && a == b
+	requestAuthority, ok := canonicalAuthority(g.cfg.PublicScheme, r.Host)
+	return ok && originAuthority == requestAuthority
 }
-func canonicalHTTPSAuthority(a string) (string, bool) {
-	h, p := a, ""
-	if ph, pp, e := net.SplitHostPort(a); e == nil {
-		if pp == "" {
-			return "", false
+
+func canonicalAuthority(scheme, authority string) (string, bool) {
+	if scheme != "http" && scheme != "https" || authority == "" || strings.HasSuffix(authority, ":") {
+		return "", false
+	}
+	u, err := url.Parse("//" + authority)
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return "", false
+	}
+	if ip := net.ParseIP(host); ip == nil && !validAuthorityHostname(host) {
+		return "", false
+	}
+	port := u.Port()
+	defaultPort := "443"
+	if scheme == "http" {
+		defaultPort = "80"
+	}
+	if port == "" {
+		port = defaultPort
+	} else if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return "", false
+	}
+	if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return host + ":" + port, true
+}
+
+func expectedAuthority(scheme, host string) string {
+	a, _ := canonicalAuthority(scheme, host)
+	return a
+}
+
+func validAuthorityHostname(host string) bool {
+	if len(host) > 253 || strings.HasPrefix(host, ".") || strings.Contains(host, "..") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
 		}
-		h, p = ph, pp
-	} else if strings.Contains(a, ":") {
-		return "", false
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
 	}
-	h = strings.TrimSuffix(strings.ToLower(h), ".")
-	if h == "" || (p != "" && p != "443") {
-		return "", false
-	}
-	return h, true
+	return true
 }
 func decodeLoginKey(r io.Reader) (string, error) {
 	d := json.NewDecoder(r)

@@ -64,7 +64,7 @@ func TestLoadParsesExpectedHost(t *testing.T) {
 }
 
 func TestLoadRejectsExpectedHostWithSchemeOrPath(t *testing.T) {
-	for _, value := range []string{"https://dsh.example.test", "dsh.example.test/path", ""} {
+	for _, value := range []string{"https://dsh.example.test", "dsh.example.test/path"} {
 		d := t.TempDir()
 		p := filepath.Join(d, "config.env")
 		body := "LISTEN=127.0.0.1:18081\nKEY_SALT=c2FsdHNhbHRzYWx0c2FsdA\nKEY_HASH=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nEXPECTED_HOST=" + value + "\n"

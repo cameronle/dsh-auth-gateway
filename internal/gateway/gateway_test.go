@@ -235,7 +235,12 @@ func TestSameOriginNormalizesHTTPSDefaultPortAndRejectsUnsafeOrigins(t *testing.
 			req := httptest.NewRequest(http.MethodPost, "http://auth/__dsh_auth/session", nil)
 			req.Header.Set("Origin", tc.origin)
 			req.Host = tc.host
-			if got := sameOrigin(req); got != tc.want {
+			g, err := New(testConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer g.Close()
+			if got := g.sameOrigin(req); got != tc.want {
 				t.Fatalf("sameOrigin=%v want %v", got, tc.want)
 			}
 		})

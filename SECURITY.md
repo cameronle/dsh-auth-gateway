@@ -4,7 +4,22 @@ Report vulnerabilities privately to the repository owner. Do not open public iss
 
 ## Threat model
 
-The gateway protects a loopback-only web service from unauthenticated network access through a trusted local reverse proxy. It does not defend against an attacker who already controls the host, can modify Caddy/systemd configuration, or can read process memory as root.
+The gateway protects a loopback-only web service from unauthenticated network access through a trusted local reverse proxy. It does not defend against an attacker who already controls the host, can modify the reverse proxy/systemd configuration, or can read process memory as root.
 
+A dynamic request-Host policy does not authorize network reachability. The surrounding ingress remains responsible for deciding which interfaces, networks, domains, users, or devices can reach the proxy:
 
-Never store the management key, production hash file, session data, Cloudflare token, or request Authorization/Cookie headers in this repository or CI logs.
+- Cloudflare Tunnel and DNS control public HTTPS ingress.
+- A host firewall/interface binding controls physical LAN ingress.
+- Tailscale ACLs/grants control tailnet ingress.
+
+For state-changing browser requests, the gateway requires a present Origin to use the configured public scheme and match the normalized current request Host. This preserves CSRF protection without hard-coding a domain, IP address, or external port.
+
+## Plain HTTP mode
+
+`PUBLIC_SCHEME=http` requires `SECURE_COOKIE=false` and is intended only for a trusted private LAN or an encrypted Tailscale/WireGuard path. Application authentication does not provide transport encryption. Anyone capable of passively sniffing or actively modifying an ordinary HTTP network path can steal the management key or session cookie.
+
+Never expose the private HTTP listener to the public Internet, an untrusted Wi-Fi/VLAN, or Tailscale Funnel. Prefer HTTPS if the underlying network cannot be trusted.
+
+## Secrets
+
+Never store the management key, production hash file, session data, Cloudflare token, Tailscale auth key, or request Authorization/Cookie headers in this repository or CI logs.

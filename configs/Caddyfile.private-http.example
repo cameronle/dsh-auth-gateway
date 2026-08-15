@@ -1,14 +1,12 @@
 {
-	# No runtime admin API: local processes cannot reconfigure Caddy over 2019.
 	admin off
 }
 
-# Cloudflare Tunnel connects to this loopback origin. The public hostname is
-# intentionally not encoded here, so DNS/Tunnel hostname changes do not require
-# changing Caddy or dsh-auth-gateway.
-http://:18080 {
-	bind 127.0.0.1
-
+# Replace :19080 with the intended private port. This intentionally accepts a
+# dynamic LAN IP, Tailscale IP, or MagicDNS name in Host. Restrict network reach
+# with the listening interface/firewall/Tailscale ACL; never expose this plain
+# HTTP listener to the public Internet.
+http://:19080 {
 	log {
 		output stdout
 		format json
@@ -17,10 +15,10 @@ http://:18080 {
 	@auth path /__dsh_auth/login /__dsh_auth/session /__dsh_auth/logout /healthz
 	handle @auth {
 		header Cache-Control "no-store"
-		reverse_proxy 127.0.0.1:18081 {
-			# Preserve the original Host automatically. Replace caller-controlled
-			# identity inputs with Cloudflare's Tunnel-provided client address.
-			header_up X-DSH-Client-IP {http.request.header.CF-Connecting-IP}
+		reverse_proxy 127.0.0.1:19081 {
+			# Caddy is the direct private-network listener. Always overwrite any
+			# identity headers supplied by the caller with the TCP peer address.
+			header_up X-DSH-Client-IP {http.request.remote.host}
 			header_up -CF-Connecting-IP
 			header_up -X-Forwarded-For
 			header_up -X-Forwarded-Host
@@ -30,9 +28,9 @@ http://:18080 {
 	}
 
 	handle {
-		forward_auth 127.0.0.1:18081 {
+		forward_auth 127.0.0.1:19081 {
 			uri /verify
-			header_up X-DSH-Client-IP {http.request.header.CF-Connecting-IP}
+			header_up X-DSH-Client-IP {http.request.remote.host}
 			header_up -CF-Connecting-IP
 			header_up -X-Forwarded-For
 			header_up -X-Forwarded-Host
